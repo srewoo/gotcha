@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Gotcha icon — source of truth. Caterpillar (the bug) caught in a red
+     sniper scope over a browser window. Rasterized to PNGs via scripts/gen-icons.sh. -->
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ring" x1="24" y1="24" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d9604d"/>
+      <stop offset="1" stop-color="#a2362a"/>
+    </linearGradient>
+    <radialGradient id="body" cx="0.35" cy="0.3" r="0.9">
+      <stop offset="0" stop-color="#a7df80"/>
+      <stop offset="0.6" stop-color="#6fbf4c"/>
+      <stop offset="1" stop-color="#4a9b39"/>
+    </radialGradient>
+    <linearGradient id="arrow" x1="40" y1="94" x2="98" y2="38" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3f8f30"/>
+      <stop offset="1" stop-color="#5fb845"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Browser window frame -->
+  <rect x="20" y="13" width="88" height="94" rx="11" stroke="#b9bcc2" stroke-width="4"/>
+  <line x1="20" y1="33" x2="108" y2="33" stroke="#b9bcc2" stroke-width="4"/>
+  <circle cx="31" cy="23" r="2.4" fill="#b9bcc2"/>
+  <circle cx="40" cy="23" r="2.4" fill="#b9bcc2"/>
+  <circle cx="49" cy="23" r="2.4" fill="#b9bcc2"/>
+
+  <!-- Red sniper scope: ring + 4 outer ticks -->
+  <g stroke="url(#ring)" stroke-width="6" stroke-linecap="round">
+    <circle cx="64" cy="64" r="38" fill="none"/>
+    <line x1="64" y1="14" x2="64" y2="24"/>
+    <line x1="64" y1="104" x2="64" y2="114"/>
+    <line x1="14" y1="64" x2="24" y2="64"/>
+    <line x1="104" y1="64" x2="114" y2="64"/>
+  </g>
+
+  <!-- Green arrow through the scope (bottom-left → top-right) -->
+  <g stroke="url(#arrow)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <line x1="40" y1="92" x2="92" y2="40"/>
+    <polyline points="78,38 93,39 92,54"/>
+  </g>
+
+  <!-- Caterpillar body: head (upper-left) → tail (lower-right) -->
+  <g>
+    <circle cx="86" cy="82" r="7" fill="url(#body)"/>
+    <circle cx="78" cy="77" r="8" fill="url(#body)"/>
+    <circle cx="70" cy="71" r="9" fill="url(#body)"/>
+    <circle cx="61" cy="64" r="10" fill="url(#body)"/>
+    <circle cx="52" cy="56" r="11.5" fill="url(#body)"/>
+    <!-- antennae -->
+    <g stroke="#4a9b39" stroke-width="2.6" stroke-linecap="round">
+      <line x1="47" y1="48" x2="42" y2="40"/>
+      <line x1="55" y1="46" x2="54" y2="37"/>
+    </g>
+    <circle cx="42" cy="39" r="2.2" fill="#4a9b39"/>
+    <circle cx="54" cy="36" r="2.2" fill="#4a9b39"/>
+    <!-- face -->
+    <circle cx="48" cy="55" r="1.8" fill="#234a18"/>
+    <circle cx="56" cy="55" r="1.8" fill="#234a18"/>
+    <path d="M47 60 Q52 64 57 60" stroke="#234a18" stroke-width="2" fill="none" stroke-linecap="round"/>
+  </g>
+</svg>

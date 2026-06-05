@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gotcha — Review</title>
+    <link rel="icon" type="image/svg+xml" href="../ui/icon.svg" />
+    <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="./review.css" />
+    <link rel="stylesheet" href="./replay.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="top">
+        <div class="word serif"><span>🐛</span> Gotcha<span class="dot">.</span></div>
+        <span class="tagline">caught the bug, caught the excuse.</span>
+      </div>
+
+      <div id="loading" class="loading">Loading capture…</div>
+
+      <!-- REVIEW -->
+      <div id="review" hidden>
+        <p class="eyebrow">Review &amp; redact</p>
+        <h2 class="screen-h serif">Everything captured. Trim before you file.</h2>
+        <div class="grid">
+          <div class="card">
+            <div class="sect field">
+              <label>Title</label>
+              <input id="title" />
+            </div>
+            <div class="sect">
+              <h4>Reproduction steps <span class="count" id="steps-count"></span></h4>
+              <ol class="steps" id="steps"></ol>
+            </div>
+            <div class="sect">
+              <h4>Console <span class="count" id="console-count"></span></h4>
+              <div class="log mono" id="console"></div>
+            </div>
+            <div class="sect">
+              <h4>Network <span class="count" id="network-count"></span></h4>
+              <div class="net mono" id="network"></div>
+              <div class="redact">🔒 Secrets &amp; PII masked on file when redaction is on</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="card">
+              <div class="sect">
+                <h4>Screenshot <span class="count" id="shot-tools" hidden>
+                  <button class="anno-tool active" data-tool="box" title="Box">▢</button>
+                  <button class="anno-tool" data-tool="arrow" title="Arrow">↗</button>
+                  <button class="anno-tool" data-tool="blur" title="Blur">🌫️</button>
+                  <button class="anno-tool" data-tool="undo" title="Undo">↶</button>
+                </span></h4>
+                <div class="shot" id="shot"></div>
+              </div>
+              <div class="sect" id="replay-sect" hidden>
+                <h4>Session replay <span class="count" id="replay-count"></span></h4>
+                <div class="replay-host" id="replay"></div>
+              </div>
+              <div class="sect">
+                <h4>Environment</h4>
+                <div class="log mono i" id="env"></div>
+              </div>
+              <div class="sect">
+                <h4>Redaction <span class="count" id="redact-state">on</span></h4>
+                <label class="redact-toggle">
+                  <input type="checkbox" id="redact" checked />
+                  Mask secrets, cookies &amp; PII before filing
+                </label>
+              </div>
+            </div>
+            <div class="testgen">
+              <div class="row"><span class="tag red">the wedge</span><b>Generate regression test</b></div>
+              <p>Turn these steps + the failing request &amp; console assertions into a Playwright regression test. If an AI key is set, selectors and an end-state assertion are enhanced automatically.</p>
+              <button class="btn red" id="gen-test">Generate Playwright test</button>
+              <div class="testgen-result" id="rv-testgen-result" hidden>
+                <div class="row">
+                  <span class="tag red">Generated</span>
+                  <span class="testgen-name mono" id="rv-test-name"></span>
+                </div>
+                <pre class="code-box mono" id="rv-test-code"></pre>
+                <div class="testgen-actions">
+                  <button class="btn red" id="rv-download-test">Download .spec.ts</button>
+                  <button class="btn ghost" id="rv-copy-test">Copy</button>
+                </div>
+              </div>
+            </div>
+            <div class="ai-card" id="ai-card" hidden>
+              <div class="row"><span class="tag">✨ AI triage</span><b>Explain &amp; suggest fixes</b></div>
+              <p class="muted" id="ai-hint">Uses your own API key · the report is redacted before it's sent.</p>
+              <button class="btn ghost" id="ai-run">Analyse this bug</button>
+              <div class="ai-result" id="ai-result" hidden>
+                <div id="ai-severity" class="ai-sev" hidden></div>
+                <h5>Summary</h5>
+                <p id="ai-summary"></p>
+                <div id="ai-title-row" class="ai-title-row" hidden>
+                  <span class="muted">Suggested title:</span>
+                  <b id="ai-title-text"></b>
+                  <button class="btn ghost tiny" id="ai-use-title">Use</button>
+                </div>
+                <h5>Likely root causes</h5>
+                <ul id="ai-causes"></ul>
+                <h5>Debugging steps</h5>
+                <ol id="ai-steps"></ol>
+                <p class="muted mono" id="ai-meta"></p>
+              </div>
+            </div>
+            <button class="btn red file-btn" id="file">File report →</button>
+            <button class="btn ghost file-btn" id="export-share">Export &amp; share (self-contained HTML) ⤓</button>
+            <button class="btn ghost file-btn" id="export-har">Export network as HAR ⤓</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- FILE -->
+      <div id="file-step" hidden>
+        <p class="eyebrow">File it</p>
+        <h2 class="screen-h serif">One integration, done well.</h2>
+        <div class="center card file-card">
+          <h3 class="serif">Where should this go?</h3>
+          <p class="muted">All artifacts attach automatically.</p>
+          <div class="dup-warn" id="dup-warn" hidden></div>
+          <div class="integ" id="integ"></div>
+          <div class="grid2">
+            <div class="field"><label>Team</label><input id="f-team" value="Web · Checkout" /></div>
+            <div class="field"><label>Assignee</label><input id="f-assignee" value="@on-call" /></div>
+          </div>
+          <div class="field" style="margin-top: 12px">
+            <label>Priority</label><input id="f-priority" value="High" />
+          </div>
+          <label class="row-toggle">
+            <input type="checkbox" id="f-gentest" checked />
+            Also generate a Playwright regression test
+          </label>
+          <button class="btn primary file-confirm" id="file-confirm">Create issue</button>
+          <button class="btn ghost file-back" id="file-back">← Back to review</button>
+        </div>
+      </div>
+
+      <!-- SUCCESS -->
+      <div id="success" hidden>
+        <p class="eyebrow">Filed</p>
+        <h2 class="screen-h serif">No "cannot reproduce" this time.</h2>
+        <div class="center card success-card">
+          <div class="success-mark">✓</div>
+          <h3 class="serif">Gotcha. Filed with full evidence.</h3>
+          <p class="muted">The dev has everything they need to fix it now.</p>
+          <div class="ticket-link">
+            <span class="k mono" id="ticket-id"></span>
+            <span id="ticket-title" style="flex: 1"></span>
+            <a id="ticket-open" class="tag ok" target="_blank">Open in Linear ↗</a>
+          </div>
+          <div class="evid" id="evid"></div>
+
+          <div class="testgen-result" id="testgen-result">
+            <div class="row">
+              <span class="tag red">Regression test generated</span>
+              <span class="testgen-name mono" id="test-name"></span>
+            </div>
+            <pre class="code-box mono" id="test-code"></pre>
+            <div class="testgen-actions">
+              <button class="btn red" id="download-test">Download .spec.ts</button>
+              <button class="btn ghost" id="copy-test">Copy</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="error" class="error-box" hidden></div>
+    </div>
+    <script type="module" src="./review.ts"></script>
+  </body>
+</html>

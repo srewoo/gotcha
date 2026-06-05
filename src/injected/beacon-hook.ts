@@ -1,0 +1,104 @@
+import { BRIDGE_MARKER, post } from './bridge';
+import { uid } from '@shared/uid';
+import type { NetworkEntry } from '@shared/types';
+
+// Matches the cap used in network-hook.ts — keep in sync.
+const MAX_BODY = 16_384;
+
+function clip(text: string): string {
+  return text.length > MAX_BODY ? `${text.slice(0, MAX_BODY)}… [${text.length} bytes total]` : text;
+}
+
+function emit(entry: NetworkEntry): void {
+  post({ marker: BRIDGE_MARKER, type: 'network', entry });
+}
+
+// Best-effort serialisation of the sendBeacon body data, which can be any
+// BodyInit type (string, Blob, ArrayBuffer, FormData, URLSearchParams).
+function serializeBeaconData(data?: BodyInit | null): string | undefined {
+  if (data == null) return undefined;
+  try {
+    if (typeof data === 'string') return clip(data);
+    if (data instanceof URLSearchParams) return clip(data.toString());
+    if (data instanceof FormData) {
+      const parts: string[] = [];
+      data.forEach((value, key) => {
+        parts.push(`${key}=${typeof value === 'string' ? value : '[File]'}`);
+      });
+      return clip(parts.join('&'));
+    }
+    // Blob and ArrayBuffer: show type/size only — can't synchronously decode.
+    if (data instanceof Blob) return `[Blob type=${data.type} size=${data.size}]`;
+    if (data instanceof ArrayBuffer) return `[ArrayBuffer byteLength=${data.byteLength}]`;
+    return clip(String(data));
+  } catch {
+    return undefined;
+  }
+}
+
+// Guard: avoid double-patching if the page re-evaluates the injected script.
+let installed = false;
+
+export function installBeaconHook(): void {
+  if (installed) return;
+  installed = true;
+
+  // navigator.sendBeacon may not exist in all environments (e.g. headless).
+  if (typeof navigator === 'undefined' || typeof navigator.sendBeacon !== 'function') return;
+
+  const originalSendBeacon = navigator.sendBeacon.bind(navigator);
+
+  navigator.sendBeacon = function (url: string, data?: BodyInit | null): boolean {
+    const ts = Date.now();
+    let result = true;
+    let failed = false;
+    try {
+      result = originalSendBeacon(url, data);
+      failed = result === false;
+    } catch (err) {
+      failed = true;
+      // Re-throw so the host page's error handling is unaffected.
+      try {
+        const entry: NetworkEntry = {
+          id: uid(),
+          url: String(url),
+          method: 'POST',
+          status: 0,
+          statusText: err instanceof Error ? err.message : 'sendBeacon threw',
+          requestBody: serializeBeaconData(data),
+          durationMs: Date.now() - ts,
+          failed: true,
+          ts,
+          transport: 'beacon',
+        };
+        emit(entry);
+      } catch {
+        // emit must never throw
+      }
+      throw err;
+    }
+
+    try {
+      const entry: NetworkEntry = {
+        id: uid(),
+        url: String(url),
+        method: 'POST',
+        // sendBeacon is fire-and-forget — there is no HTTP status code available
+        // synchronously. 0 is conventional for "no response seen".
+        status: 0,
+        statusText: 'beacon (fire-and-forget)',
+        requestBody: serializeBeaconData(data),
+        // Beacons have no response body.
+        durationMs: Date.now() - ts,
+        failed,
+        ts,
+        transport: 'beacon',
+      };
+      emit(entry);
+    } catch {
+      // emit must never throw into the host page
+    }
+
+    return result;
+  };
+}

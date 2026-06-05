@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gotcha — Settings</title>
+    <link rel="icon" type="image/svg+xml" href="../ui/icon.svg" />
+    <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="./options.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="head">
+        <div class="word serif">🐛 Gotcha<span class="dot">.</span> <span>Settings</span></div>
+        <a class="tag plain" id="open-dash" href="#">Open dashboard ↗</a>
+      </div>
+
+      <div class="card">
+        <h3 class="serif">Linear <span class="tag plain">MVP</span></h3>
+        <p class="muted">Personal API key (Settings → API) and the target team id.</p>
+        <div class="field"><label>API key</label><input id="linearApiKey" type="password" placeholder="lin_api_…" /></div>
+        <div class="field"><label>Team id</label><input id="linearTeamId" placeholder="team UUID" /></div>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn ghost itest" data-integ="linear">Test connection</button>
+          <span class="saved" data-result="linear" hidden></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="serif">Jira <span class="tag plain">v2</span></h3>
+        <p class="muted">Atlassian Cloud site, account email, API token, and project key.</p>
+        <div class="grid2">
+          <div class="field"><label>Host</label><input id="jiraHost" placeholder="acme.atlassian.net" /></div>
+          <div class="field"><label>Email</label><input id="jiraEmail" placeholder="you@acme.com" /></div>
+          <div class="field"><label>API token</label><input id="jiraToken" type="password" placeholder="ATATT…" /></div>
+          <div class="field"><label>Project key</label><input id="jiraProjectKey" placeholder="BUG" /></div>
+        </div>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn ghost itest" data-integ="jira">Test connection</button>
+          <span class="saved" data-result="jira" hidden></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="serif">GitHub <span class="tag plain">v2</span></h3>
+        <p class="muted">Fine-grained PAT with Issues: write, and the target repository.</p>
+        <div class="grid2">
+          <div class="field"><label>Token</label><input id="githubToken" type="password" placeholder="github_pat_…" /></div>
+          <div class="field"><label>Repository</label><input id="githubRepo" placeholder="owner/repo" /></div>
+        </div>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn ghost itest" data-integ="github">Test connection</button>
+          <span class="saved" data-result="github" hidden></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="serif">Slack <span class="tag plain">v2</span></h3>
+        <p class="muted">An <b>Incoming Webhook</b> URL. "Test connection" posts a one-line test message to the channel.</p>
+        <div class="field"><label>Webhook URL</label><input id="slackWebhookUrl" type="password" placeholder="https://hooks.slack.com/services/…" /></div>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn ghost itest" data-integ="slack">Test connection</button>
+          <span class="saved" data-result="slack" hidden></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="serif">AI assistant <span class="tag plain">bring your own key</span></h3>
+        <p class="muted">
+          Optional. On the review screen you can ask an LLM to summarise the bug and suggest
+          debugging steps. Gotcha uses <b>your own API key</b> (no Gotcha server, no added cost) and
+          the report is <b>always redacted before it is sent</b>. Works with OpenAI, Anthropic, and
+          Google&nbsp;Gemini.
+        </p>
+        <div class="grid2">
+          <div class="field">
+            <label>Provider</label>
+            <select id="aiProvider">
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+          </div>
+          <div class="field"><label>Model</label><input id="aiModel" placeholder="gpt-4.1-mini / claude-haiku-4-5 / gemini-2.5-flash" /></div>
+          <div class="field"><label>API key</label><input id="aiApiKey" type="password" placeholder="your provider API key" /></div>
+        </div>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn ghost" id="ai-test">Test connection</button>
+          <span class="saved" id="ai-test-result" hidden></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="serif">Privacy &amp; capture rules</h3>
+        <p class="muted">Redaction (Authorization headers, cookies, emails, card numbers, JWTs, password/secret fields, secret query params, the DOM snapshot) is <b>on by default</b> on every report and toggled per-report on the review screen.</p>
+        <div class="field">
+          <label>Extra redaction patterns <span class="muted">(one regex per line)</span></label>
+          <textarea id="redactExtraPatterns" rows="3" placeholder="acme-\d{6}&#10;internal-[a-z]+-token"></textarea>
+        </div>
+        <div class="field">
+          <label>Don't capture on these domains <span class="muted">(one host per line)</span></label>
+          <textarea id="captureDenyDomains" rows="2" placeholder="bank.example.com&#10;admin.internal"></textarea>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn primary" id="save">Save settings</button>
+        <span class="saved" id="saved" hidden>Saved ✓</span>
+      </div>
+    </div>
+    <script type="module" src="./options.ts"></script>
+  </body>
+</html>

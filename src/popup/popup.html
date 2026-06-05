@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Gotcha</title>
+    <link rel="icon" type="image/svg+xml" href="../ui/icon.svg" />
+    <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <div class="popup">
+      <div class="popup-head">
+        <span class="av">🐛</span>
+        <div>
+          <h3 class="serif">Ready to catch bugs</h3>
+          <p id="sub">Console &amp; network capture running quietly</p>
+        </div>
+      </div>
+      <div class="popup-body">
+        <button class="bigcap" id="capture">● Capture this bug</button>
+        <button class="btn ghost record-btn" id="record">Start a recording session →</button>
+        <div class="cap-row">
+          <div class="chip"><b id="c-console">–</b><span>console</span></div>
+          <div class="chip"><b id="c-failed">–</b><span>failed reqs</span></div>
+          <div class="chip"><b id="c-redact">✓</b><span>redaction</span></div>
+        </div>
+        <label class="deep-row">
+          <input type="checkbox" id="deep" />
+          <span>
+            <b>Deep capture</b>
+            <small>Full response bodies &amp; pre-load requests (shows a debug banner)</small>
+          </span>
+        </label>
+        <div class="recent">
+          <h4>Recent reports</h4>
+          <div id="recent-list"></div>
+          <p id="recent-empty" class="empty">No reports yet — capture your first bug.</p>
+          <a class="dash-link" id="open-dash" href="#">Open dashboard →</a>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./popup.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gotcha — Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="../ui/icon.svg" />
+    <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="./dashboard.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="dash">
+        <div class="side">
+          <div class="w2 serif">🐛 Gotcha<span class="dot">.</span></div>
+          <div class="nv on" data-view="reports">📋 Reports</div>
+          <div class="nv" data-view="tests">🧪 Generated tests</div>
+          <div class="nv" data-view="insights">📊 Insights</div>
+          <div class="nv" id="nav-settings">🔌 Integrations &amp; settings</div>
+        </div>
+        <div class="main">
+          <div class="kpis" id="kpis"></div>
+          <div id="view-reports">
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Bug</th><th>Captured</th><th>Evidence</th><th>Test</th><th>Filed</th><th class="col-actions"></th></tr>
+              </thead>
+              <tbody id="reports-body"></tbody>
+            </table>
+            <p class="hint" id="reports-empty" hidden>No reports yet — capture a bug to populate this.</p>
+            <p class="hint">The flywheel — every bug becomes a captured repro, becomes a test in CI, becomes one fewer regression.</p>
+          </div>
+          <div id="view-tests" hidden>
+            <div id="tests-list"></div>
+            <p class="hint" id="tests-empty" hidden>No generated tests yet.</p>
+          </div>
+          <div id="view-insights" hidden>
+            <p class="muted">Local metrics from captures stored in this browser. Team-wide analytics (cannot-reproduce rate, triage time, tests merged to CI) arrive with the shared workspace in v2.</p>
+            <div id="insights-body"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./dashboard.ts"></script>
+  </body>
+</html>

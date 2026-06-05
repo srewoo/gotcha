@@ -1,0 +1,30 @@
+{
+  "name": "gotcha",
+  "version": "0.1.0",
+  "description": "One-click bug report that ships with a runnable regression test.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "icons": "bash scripts/gen-icons.sh",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.28",
+    "@types/chrome": "^0.0.270",
+    "@types/node": "^22.5.0",
+    "@vitest/coverage-v8": "^4.1.8",
+    "happy-dom": "^20.10.1",
+    "jsdom": "^27.0.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2",
+    "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}
