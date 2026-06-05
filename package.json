@@ -8,6 +8,7 @@
     "dev": "vite",
     "icons": "bash scripts/gen-icons.sh",
     "build": "tsc --noEmit && vite build",
+    "zip": "npm run build && rm -f gotcha-$npm_package_version.zip && cd dist && zip -r -X ../gotcha-$npm_package_version.zip . && cd ..",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest",
