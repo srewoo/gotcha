@@ -1,3 +1,5 @@
+// Must run before the page creates any shadow roots: patch attachShadow first.
+import { installShadowRegistry } from './shadow-registry';
 import { installConsoleHook } from './console-hook';
 import { installNetworkHook } from './network-hook';
 import { installErrorHook } from './error-hook';
@@ -19,6 +21,7 @@ import { installDomRecorder } from './dom-recorder';
   if (w.__gotchaInstalled) return;
   w.__gotchaInstalled = true;
 
+  installShadowRegistry();
   installConsoleHook();
   installNetworkHook();
   installErrorHook();

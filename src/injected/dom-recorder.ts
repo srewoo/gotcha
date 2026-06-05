@@ -17,6 +17,9 @@
 
 import { BRIDGE_MARKER, post } from './bridge';
 import { isControlMessage } from '@shared/messaging';
+import { KEYFRAME_INTERVAL_MS } from '@shared/capture-config';
+import { absolutizeCss } from '@shared/css-util';
+import { closedRootFor } from './shadow-registry';
 import type { ReplayEvent } from '@shared/types';
 
 // Throttle intervals (ms).
@@ -24,10 +27,6 @@ const MUTATION_THROTTLE_MS = 250;
 const SCROLL_THROTTLE_MS = 100;
 const RESIZE_THROTTLE_MS = 200;
 const MOUSE_THROTTLE_MS = 200;
-
-// Defensive cap: stop emitting mutations after this many events to avoid
-// flooding the ring buffer on pathologically dynamic pages.
-const MAX_MUTATION_EVENTS = 500;
 
 // Max characters kept for input values (non-sensitive).
 const MAX_INPUT_VALUE = 120;
@@ -70,21 +69,27 @@ function readSheetRules(sheet: CSSStyleSheet, budget: number): string {
   return css;
 }
 
-// Rewrite relative url(...) refs in fetched CSS to absolute, resolved against
-// the stylesheet's own location — otherwise fonts/background images would
-// resolve against the replay's <base> (the page URL) and break.
-function absolutizeCss(css: string, baseHref: string): string {
-  return css.replace(
-    /url\(\s*(['"]?)([^'")]+)\1\s*\)/g,
-    (m: string, quote: string, url: string): string => {
-      if (/^(?:data:|https?:|\/\/|#)/i.test(url)) return m;
-      try {
-        return `url(${quote}${new URL(url, baseHref).href}${quote})`;
-      } catch {
-        return m;
+// Inline a root's constructed stylesheets (document.adoptedStyleSheets or a
+// shadow root's). WHY: modern frameworks (Lit, CSS-in-JS, many web components)
+// attach styles via `adoptedStyleSheets`, which are NOT in `document.styleSheets`
+// and are NOT serialized by cloneNode/outerHTML — so without this they vanish
+// from the replay and the page renders unstyled. Constructed sheets are
+// same-origin, so `cssRules` is always readable.
+function adoptedCssText(root: DocumentOrShadowRoot): string {
+  let css = '';
+  const sheets = root.adoptedStyleSheets;
+  if (!sheets) return css;
+  for (const sheet of sheets) {
+    try {
+      for (const rule of Array.from(sheet.cssRules)) {
+        css += rule.cssText + '\n';
+        if (css.length >= MAX_INLINE_CSS) return css;
       }
-    },
-  );
+    } catch {
+      // Unreadable — skip.
+    }
+  }
+  return css;
 }
 
 // Synchronous, readable-only CSS — used as an immediate fallback if the async
@@ -99,7 +104,7 @@ function collectInlineCss(): string {
       // Unreadable cross-origin sheet — left as a <link> fallback.
     }
   }
-  return css;
+  return css + adoptedCssText(document);
 }
 
 // Full CSS collection: reads readable sheets synchronously and fetch()es opaque
@@ -146,7 +151,7 @@ async function collectInlineCssAsync(): Promise<string> {
       new Promise<void>((resolve) => setTimeout(resolve, CSS_FETCH_TIMEOUT_MS)),
     ]);
   }
-  return parts.join('\n');
+  return parts.join('\n') + adoptedCssText(document);
 }
 
 // Patterns that mark an input as sensitive. Must never record real values.
@@ -178,28 +183,69 @@ function selectorFor(el: Element): string {
   return `${el.tagName.toLowerCase()}${cls}`;
 }
 
-// Return a sanitised body snapshot: scripts removed, sensitive inputs masked.
-function snapshotBody(): string {
-  const clone = document.body.cloneNode(true) as HTMLElement;
+// Strip scripts and mask sensitive input values on a cloned subtree's LIGHT DOM.
+// (Shadow content is sanitised separately, as it's recursed into before wrapping.)
+function sanitizeClone(clone: Element | DocumentFragment): void {
   clone.querySelectorAll('script, noscript').forEach((n) => n.remove());
   clone.querySelectorAll('input, textarea').forEach((el) => {
-    if (isSensitive(el)) {
-      el.setAttribute('value', '«redacted»');
-    }
+    if (isSensitive(el)) el.setAttribute('value', '«redacted»');
   });
-  return capHtml(clone.outerHTML);
+}
+
+// Deep-clone an element, sanitise it, and inline any OPEN shadow roots as
+// Declarative Shadow DOM (`<template shadowrootmode="open">`) carrying the shadow
+// root's own adopted + inline styles. WHY: cloneNode/outerHTML drops shadow roots
+// entirely, so component-based apps (web components, micro-frontends) replay
+// unstyled and structurally empty. The replay iframe's srcdoc re-hydrates DSD
+// natively, so no player change is needed. Closed shadow roots are inaccessible
+// (`el.shadowRoot` is null) and unavoidably lost.
+function cloneWithShadow(el: Element): Element {
+  const clone = el.cloneNode(true) as Element;
+  // cloneNode preserves light-DOM structure, so a document-order walk of the
+  // original aligns 1:1 with the clone. Include `el` itself (querySelectorAll
+  // returns only descendants) so a host passed in directly — e.g. during nested
+  // shadow recursion — has its own shadow root inlined too.
+  const origEls = [el, ...el.querySelectorAll('*')];
+  const cloneEls = [clone, ...clone.querySelectorAll('*')];
+  for (let i = 0; i < origEls.length; i++) {
+    // Open roots via el.shadowRoot; closed roots via the attachShadow registry.
+    const sr = origEls[i]!.shadowRoot ?? closedRootFor(origEls[i]!);
+    const target = cloneEls[i];
+    if (!sr || !target) continue;
+
+    const tpl = document.createElement('template');
+    tpl.setAttribute('shadowrootmode', 'open');
+    const css = adoptedCssText(sr);
+    if (css) {
+      const style = document.createElement('style');
+      style.textContent = css;
+      tpl.content.appendChild(style);
+    }
+    for (const child of Array.from(sr.childNodes)) {
+      tpl.content.appendChild(
+        child.nodeType === Node.ELEMENT_NODE
+          ? cloneWithShadow(child as Element) // nested shadow hosts recurse
+          : child.cloneNode(true),
+      );
+    }
+    sanitizeClone(tpl.content); // sanitise shadow light DOM (querySelectorAll skips it otherwise)
+    // DSD template must be the host's first child, before slottable light DOM.
+    target.insertBefore(tpl, target.firstChild);
+  }
+  sanitizeClone(clone);
+  return clone;
+}
+
+// Return a sanitised body snapshot: scripts removed, sensitive inputs masked,
+// open shadow DOM inlined. Exported for unit testing.
+export function snapshotBody(): string {
+  return capHtml(cloneWithShadow(document.body).outerHTML);
 }
 
 // Build a sanitised full-document snapshot with the given CSS inlined into <head>
 // so the replay renders styled (see collectInlineCss / collectInlineCssAsync).
 function buildFullSnapshot(css: string): string {
-  const clone = document.documentElement.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('script, noscript').forEach((n) => n.remove());
-  clone.querySelectorAll('input, textarea').forEach((el) => {
-    if (isSensitive(el)) {
-      el.setAttribute('value', '«redacted»');
-    }
-  });
+  const clone = cloneWithShadow(document.documentElement);
 
   if (css) {
     let head = clone.querySelector('head');
@@ -216,8 +262,9 @@ function buildFullSnapshot(css: string): string {
   return capHtml(`<!DOCTYPE html>\n${clone.outerHTML}`, MAX_FULL_SNAPSHOT_HTML);
 }
 
-// Synchronous full snapshot (readable CSS only) — fallback path.
-function snapshotFull(): string {
+// Synchronous full snapshot (readable CSS only) — fallback path. Exported for
+// unit testing.
+export function snapshotFull(): string {
   return buildFullSnapshot(collectInlineCss());
 }
 
@@ -252,9 +299,11 @@ function throttle<T extends unknown[]>(
 // always-on for retroactive one-click capture; replay is a recording feature.
 let enabled = false;
 let epoch = 0;
-let mutationCount = 0;
 let pendingMutation = false;
 let observer: MutationObserver | null = null;
+// When always-on (Instant Replay), a recurring timer emits styled keyframe
+// snapshots so any trailing slice has a recent, seedable frame to start from.
+let keyframeTimer: ReturnType<typeof setInterval> | null = null;
 const rel = (): number => Date.now() - epoch;
 
 function startObserver(): void {
@@ -271,8 +320,10 @@ function startObserver(): void {
 
 const flushMutation = (): void => {
   pendingMutation = false;
-  if (!enabled || mutationCount >= MAX_MUTATION_EVENTS) return;
-  mutationCount++;
+  if (!enabled) return;
+  // No lifetime cap: the 250ms throttle bounds the emit RATE, and buffer-store's
+  // ring + age-based retention bound memory. A lifetime counter here used to make
+  // always-on Instant Replay silently freeze after N mutations on a busy page.
   try {
     emit({ t: rel(), kind: 'mutation', html: snapshotBody() });
   } catch {
@@ -284,38 +335,53 @@ const scheduleFlush = throttle(() => {
   if (pendingMutation) flushMutation();
 }, MUTATION_THROTTLE_MS);
 
-function enable(): void {
-  if (enabled) return;
-  enabled = true;
-  epoch = Date.now();
-  mutationCount = 0;
-
-  // Emit an immediate snapshot with readable CSS so the frame is never lost,
-  // then asynchronously enrich it with fetched cross-origin CSS and re-emit at
-  // t=0. The renderer's seekTo picks the last snapshot at/before the target, so
-  // the enriched one wins at playback start.
+// Emit a full, styled snapshot at relative time `t`: readable CSS immediately so
+// the frame is never lost, then the async-enriched version (cross-origin CSS) at
+// the same `t`. seekTo picks the LAST snapshot at/before a target, so the
+// enriched one supersedes the readable one. Used for both the initial frame
+// (t=0) and recurring always-on keyframes.
+function emitSnapshot(t: number): void {
   try {
-    emit({ t: 0, kind: 'snapshot', html: snapshotFull() });
+    emit({ t, kind: 'snapshot', html: snapshotFull() });
   } catch {
     /* never throw */
   }
-
   void collectInlineCssAsync()
     .then((css) => {
-      if (!enabled) return;
-      const html = buildFullSnapshot(css);
-      emit({ t: 0, kind: 'snapshot', html });
+      if (enabled) emit({ t, kind: 'snapshot', html: buildFullSnapshot(css) });
     })
     .catch(() => {
       /* keep the readable-only snapshot already emitted */
     });
+}
 
+function enable(_alwaysOn = false): void {
+  if (enabled) return;
+  enabled = true;
+  epoch = Date.now();
+
+  emitSnapshot(0);
   startObserver();
+
+  // Refresh a styled keyframe on an interval in EVERY mode. In always-on this
+  // keeps a retained slice seekable; in a manual session it means long
+  // recordings stay styled and seekable after the ring rolls past early frames
+  // (a recent keyframe is always available as a seed). Cheap: one full snapshot
+  // per interval vs. a mutation snapshot every 250ms.
+  if (keyframeTimer === null) {
+    keyframeTimer = setInterval(() => {
+      if (enabled) emitSnapshot(rel());
+    }, KEYFRAME_INTERVAL_MS);
+  }
 }
 
 function disable(): void {
   enabled = false;
   observer?.disconnect();
+  if (keyframeTimer !== null) {
+    clearInterval(keyframeTimer);
+    keyframeTimer = null;
+  }
 }
 
 export function installDomRecorder(): void {
@@ -327,18 +393,30 @@ export function installDomRecorder(): void {
 }
 
 function _install(): void {
-  // Control channel from the ISOLATED content script (start/stop a session).
+  // Control channel from the ISOLATED content script. A session ('replay-on')
+  // and always-on Instant Replay ('replay-always-on') are mutually exclusive —
+  // the content script tears one down before starting the other.
   window.addEventListener('message', (event) => {
     if (event.source !== window || !isControlMessage(event.data)) return;
-    if (event.data.action === 'replay-on') enable();
+    if (event.data.action === 'replay-on') enable(false);
+    else if (event.data.action === 'replay-always-on') enable(true);
     else if (event.data.action === 'replay-off') disable();
   });
 
   // Lightweight listeners stay installed but only emit while enabled.
+  // capture:true so scrolls on inner elements (which don't bubble) are seen too;
+  // we record the element's selector + offset so the replay can scroll the right
+  // container, not just the window. (scroll on document → window scroll.)
   window.addEventListener(
     'scroll',
-    throttle(() => {
-      if (enabled) emit({ t: rel(), kind: 'scroll', x: window.scrollX, y: window.scrollY });
+    throttle((e: Event) => {
+      if (!enabled) return;
+      const target = e.target;
+      if (target instanceof Element && target !== document.documentElement && target !== document.body) {
+        emit({ t: rel(), kind: 'scroll', selector: selectorFor(target), x: target.scrollLeft, y: target.scrollTop });
+      } else {
+        emit({ t: rel(), kind: 'scroll', x: window.scrollX, y: window.scrollY });
+      }
     }, SCROLL_THROTTLE_MS),
     { passive: true, capture: true },
   );

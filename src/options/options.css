@@ -21,6 +21,11 @@
   border: 1px solid var(--line2); font-size: 13px; font-family: inherit; color: var(--ink);
 }
 .field textarea { resize: vertical; min-height: 58px; line-height: 1.5; }
+.toggle-field { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 12px; cursor: pointer; }
+.toggle-field:last-child { margin-bottom: 0; }
+.toggle-field input { margin-top: 3px; }
+.toggle-field b { font-size: 13px; display: block; }
+.toggle-field small { font-size: 11.5px; color: var(--muted); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .actions { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .saved { color: var(--ok); font-size: 13px; font-weight: 600; }

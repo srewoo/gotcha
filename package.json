@@ -1,12 +1,11 @@
 {
   "name": "gotcha",
-  "version": "0.1.0",
+  "version": "1.0",
   "description": "One-click bug report that ships with a runnable regression test.",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "icons": "bash scripts/gen-icons.sh",
     "build": "tsc --noEmit && vite build",
     "zip": "npm run build && rm -f gotcha-$npm_package_version.zip && cd dist && zip -r -X ../gotcha-$npm_package_version.zip . && cd ..",
     "typecheck": "tsc --noEmit",

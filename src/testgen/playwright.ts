@@ -135,26 +135,47 @@ function stepToCode(step: ReproStep, isFirstNav: boolean): string | null {
 // ─── Assertion builders ──────────────────────────────────────────────────────
 
 /**
- * 1. Failing-request guard: the specific request that failed must now succeed.
+ * 1. Failing-request guard: every request that failed must now succeed.
  *
  * WHY: this catches network regressions — the same endpoint returning a 4xx/5xx
- * again. It is kept but is no longer the *only* assertion.
+ * again. We guard ALL distinct failed endpoints (capped), not just the first,
+ * since a bug often shows up as several related requests failing together.
  */
-function networkAssertion(failed: NetworkEntry | undefined): {
-  setup: string;
-  check: string;
-} {
-  if (!failed) return { setup: '', check: '' };
-  const pattern = `**${pathnameOf(failed.url)}`;
-  return {
-    setup: `  const _failedResponse = page.waitForResponse(${q(pattern)});`,
-    check: [
-      '  const _res = await _failedResponse;',
-      `  // Regression guard — this request returned ${failed.status} when the bug was filed.`,
-      `  // It must now return < 400.`,
-      '  expect(_res.status(), `${_res.request().method()} ${_res.url()}`).toBeLessThan(400);',
-    ].join('\n'),
-  };
+
+// Cap how many failed endpoints we guard, so a cascade of failures (e.g. 18
+// chunk 404s after one root failure) doesn't bloat the spec.
+const MAX_FAILED_GUARDS = 5;
+
+// Distinct failed endpoints, keyed by method + pathname (query/host stripped so
+// volatile tokens don't fragment the set). Order-preserving + deterministic.
+function distinctFailed(network: readonly NetworkEntry[]): NetworkEntry[] {
+  const seen = new Map<string, NetworkEntry>();
+  for (const n of network) {
+    if (!n.failed) continue;
+    const key = `${n.method} ${pathnameOf(n.url)}`;
+    if (!seen.has(key)) seen.set(key, n);
+  }
+  return [...seen.values()].slice(0, MAX_FAILED_GUARDS);
+}
+
+function networkAssertions(failed: NetworkEntry[]): { setup: string; check: string } {
+  if (failed.length === 0) return { setup: '', check: '' };
+  const setups: string[] = [];
+  const checks: string[] = [];
+  failed.forEach((entry, i) => {
+    const pattern = `**${pathnameOf(entry.url)}`;
+    const v = `_failedResponse${i}`;
+    const r = `_res${i}`;
+    setups.push(`  const ${v} = page.waitForResponse(${q(pattern)});`);
+    checks.push(
+      [
+        `  const ${r} = await ${v};`,
+        `  // Regression guard — ${entry.method} ${pathnameOf(entry.url)} returned ${entry.status} when the bug was filed; it must now return < 400.`,
+        `  expect(${r}.status(), \`\${${r}.request().method()} \${${r}.url()}\`).toBeLessThan(400);`,
+      ].join('\n'),
+    );
+  });
+  return { setup: setups.join('\n'), check: checks.join('\n\n') };
 }
 
 /**
@@ -259,9 +280,10 @@ export function generatePlaywrightTest(
   enhancement?: TestEnhancement,
 ): GeneratedTest {
   const baseURL = originOf(bundle.environment.url);
-  const failed = bundle.network.find((n) => n.failed);
+  const failedList = distinctFailed(bundle.network);
+  const failed = failedList[0];
 
-  const netAssertion = networkAssertion(failed);
+  const netAssertion = networkAssertions(failedList);
   const consoleAssertion = consoleErrorAssertion(bundle.console);
 
   // The AI may supply a concrete end-state assertion; otherwise fall back to the
@@ -332,7 +354,9 @@ export function generatePlaywrightTest(
 // │     3. Console-error guards check for the EXACT messages captured;     │
 // │        update them if the wording changes after the fix.               │
 // └─────────────────────────────────────────────────────────────────────────┘
-test.use({ baseURL: ${q(baseURL)} });
+// Viewport matches the capture, so layout-dependent repros (responsive
+// breakpoints, off-screen elements) behave the same as when the bug was filed.
+test.use({ baseURL: ${q(baseURL)}, viewport: { width: ${bundle.environment.viewport.width}, height: ${bundle.environment.viewport.height} } });
 
 test(${q(slugTitle(bundle.title))}, async ({ page }) => {
 ${body}

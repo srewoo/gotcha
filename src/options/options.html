@@ -91,6 +91,27 @@
       </div>
 
       <div class="card">
+        <h3 class="serif">Capture &amp; replay</h3>
+        <p class="muted">
+          Instant Replay keeps a rolling local buffer of the last 2&nbsp;minutes on the page (held in
+          memory only, never sent anywhere) so you can file a bug — with a watchable replay — <b>after</b>
+          it happens. Off by default.
+        </p>
+        <label class="toggle-field">
+          <input type="checkbox" id="instantReplay" />
+          <span><b>Instant Replay</b><small>Always-on visual capture — grab a bug right after it happens</small></span>
+        </label>
+        <label class="toggle-field">
+          <input type="checkbox" id="shareLastMinute" />
+          <span><b>Share last minute</b><small>Adds a one-click "Share last minute" button to the popup</small></span>
+        </label>
+        <label class="toggle-field">
+          <input type="checkbox" id="captureUserEvents" />
+          <span><b>Capture user events</b><small>Save clicks, page navigation and other actions for a more accurate replay</small></span>
+        </label>
+      </div>
+
+      <div class="card">
         <h3 class="serif">Privacy &amp; capture rules</h3>
         <p class="muted">Redaction (Authorization headers, cookies, emails, card numbers, JWTs, password/secret fields, secret query params, the DOM snapshot) is <b>on by default</b> on every report and toggled per-report on the review screen.</p>
         <div class="field">

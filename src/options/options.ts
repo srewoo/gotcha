@@ -17,6 +17,10 @@ const KEYS = [
   'captureDenyDomains',
 ] as const;
 
+// Boolean capture/replay toggles. captureUserEvents defaults ON (preserves the
+// existing repro-step recording); the other two default OFF.
+const BOOL_KEYS = ['instantReplay', 'shareLastMinute', 'captureUserEvents'] as const;
+
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
   if (!el) throw new Error(`Missing #${id}`);
@@ -24,18 +28,28 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 async function load(): Promise<void> {
-  const stored = await chrome.storage.local.get([...KEYS]);
+  const stored = await chrome.storage.local.get([...KEYS, ...BOOL_KEYS]);
   for (const key of KEYS) {
     const input = document.getElementById(key) as HTMLInputElement | null;
     if (input && typeof stored[key] === 'string') input.value = stored[key] as string;
   }
+  for (const key of BOOL_KEYS) {
+    const input = document.getElementById(key) as HTMLInputElement | null;
+    if (!input) continue;
+    // captureUserEvents is opt-out (default true); the rest are opt-in.
+    input.checked = key === 'captureUserEvents' ? stored[key] !== false : stored[key] === true;
+  }
 }
 
 async function save(): Promise<void> {
-  const patch: Record<string, string> = {};
+  const patch: Record<string, string | boolean> = {};
   for (const key of KEYS) {
     const input = document.getElementById(key) as HTMLInputElement | null;
     patch[key] = input?.value.trim() ?? '';
+  }
+  for (const key of BOOL_KEYS) {
+    const input = document.getElementById(key) as HTMLInputElement | null;
+    patch[key] = input?.checked ?? false;
   }
   await chrome.storage.local.set(patch);
   const saved = $('saved');

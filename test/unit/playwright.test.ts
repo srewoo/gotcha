@@ -268,6 +268,67 @@ describe('generatePlaywrightTest — baseURL', () => {
     const { source } = generatePlaywrightTest(bundle);
     expect(source).toContain("baseURL: 'https://staging.myapp.io'");
   });
+
+  it('should set the viewport from the captured environment', () => {
+    const bundle = makeBundle({
+      environment: {
+        url: 'https://app.example.com/x',
+        userAgent: 'Mozilla/5.0',
+        browser: 'Chrome',
+        os: 'macOS',
+        viewport: { width: 1728, height: 958 },
+        dpr: 2,
+        locale: 'en-US',
+        capturedAt: 1700000000000,
+      },
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect(source).toContain('viewport: { width: 1728, height: 958 }');
+  });
+});
+
+// ─── Multiple failed endpoints ────────────────────────────────────────────────
+
+describe('generatePlaywrightTest — multiple failed endpoints', () => {
+  const net = (id: string, path: string, status: number) => ({
+    id,
+    url: `https://api.example.com${path}`,
+    method: 'GET',
+    status,
+    durationMs: 50,
+    failed: true,
+    ts: 1700000000000,
+  });
+
+  it('should emit a distinct regression guard for each distinct failed endpoint', () => {
+    const bundle = makeBundle({
+      network: [net('n1', '/a.css', 404), net('n2', '/b.css', 404), net('n3', '/c.css', 500)],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect(source).toContain('/a.css');
+    expect(source).toContain('/b.css');
+    expect(source).toContain('/c.css');
+    // Three guards → three indexed waiters, no variable collisions.
+    expect((source.match(/page\.waitForResponse/g) ?? []).length).toBe(3);
+    expect(source).toContain('_failedResponse0');
+    expect(source).toContain('_failedResponse2');
+  });
+
+  it('should dedupe identical method+path failures', () => {
+    const bundle = makeBundle({
+      network: [net('n1', '/dupe', 500), net('n2', '/dupe', 500), net('n3', '/dupe', 500)],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect((source.match(/page\.waitForResponse/g) ?? []).length).toBe(1);
+  });
+
+  it('should cap the number of guards at 5', () => {
+    const bundle = makeBundle({
+      network: Array.from({ length: 9 }, (_, i) => net(`n${i}`, `/chunk-${i}.css`, 404)),
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect((source.match(/page\.waitForResponse/g) ?? []).length).toBe(5);
+  });
 });
 
 // ─── Locator conversions ─────────────────────────────────────────────────────

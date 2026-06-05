@@ -91,7 +91,15 @@ function applyEvent(
     }
     case 'scroll': {
       const doc = iframe.contentDocument;
-      if (doc?.scrollingElement) {
+      if (!doc) break;
+      // A selector means an inner scroll container; otherwise it's the window.
+      if (event.selector) {
+        const el = doc.querySelector(event.selector);
+        if (el) {
+          el.scrollLeft = event.x ?? 0;
+          el.scrollTop = event.y ?? 0;
+        }
+      } else if (doc.scrollingElement) {
         doc.scrollingElement.scrollLeft = event.x ?? 0;
         doc.scrollingElement.scrollTop = event.y ?? 0;
       }

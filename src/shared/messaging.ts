@@ -15,11 +15,16 @@ export type IntegrationId = 'linear' | 'jira' | 'github' | 'slack';
 // the worker. The worker is the only writer of the durable store.
 export type WorkerMessage =
   | { type: 'bundle:save'; bundle: CaptureBundle }
-  | { type: 'screenshot:capture' };
+  | { type: 'screenshot:capture' }
+  // Fetch cross-origin stylesheets the page context can't read (CORS/CSP). The
+  // worker has <all_urls> host permission, so it fetches them with credentials.
+  | { type: 'css:fetch'; sheets: { href: string }[] };
 
 export type WorkerResponse =
   | { type: 'bundle:saved'; ok: true; reviewUrl: string }
   | { type: 'screenshot'; ok: true; dataUrl: string }
+  // Per-href CSS text (absolutized); hrefs that failed are omitted.
+  | { type: 'css:fetched'; ok: true; css: Record<string, string> }
   | { ok: false; error: string };
 
 // All window.postMessage payloads from MAIN world carry this marker so the
@@ -39,6 +44,7 @@ export type RuntimeMessage =
   | { type: 'capture:stop' }
   | { type: 'capture:status' }
   | { type: 'capture:finish' } // snapshot DOM + screenshot, persist, open review
+  | { type: 'capture:shareLastMinute' } // package the trailing window (no session), open review
   | { type: 'bundle:get'; id: string }
   | { type: 'bundle:list' }
   | { type: 'bundle:delete'; id: string }
@@ -112,9 +118,12 @@ export function isBridgeMessage(data: unknown): data is BridgeMessage {
 // ─── ISOLATED content → MAIN world control (via window.postMessage) ──────────
 // Used to start/stop the session-replay recorder (gap #1 gating + pause/resume).
 export const CONTROL_MARKER = '__gotcha_control__' as const;
+// 'replay-on' starts a fresh, session-scoped recording (epoch reset, t=0
+// snapshot). 'replay-always-on' starts the always-on Instant Replay recorder
+// (stable epoch + periodic keyframes). 'replay-off' tears either one down.
 export type ControlMessage = {
   marker: typeof CONTROL_MARKER;
-  action: 'replay-on' | 'replay-off';
+  action: 'replay-on' | 'replay-off' | 'replay-always-on';
 };
 
 export function isControlMessage(data: unknown): data is ControlMessage {

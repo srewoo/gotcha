@@ -3,7 +3,6 @@ import type {
   RuntimeResponse,
   WorkerMessage,
   WorkerResponse,
-  BundleSummary,
   IntegrationId,
 } from '@shared/messaging';
 import { CaptureBundle } from '@shared/types';
@@ -14,6 +13,11 @@ import { enableDeep, disableDeep, isDeep, collectDeep, fullPageScreenshot } from
 import { analyzeBundle, analyzeBundleStream, getAiConfig, chat } from '../ai/llm';
 import { findDuplicates } from '../ai/duplicates';
 import { setExtraRedactionPatterns } from '@shared/redact';
+import { absolutizeCss } from '@shared/css-util';
+
+// Cap on cross-origin CSS we inline per capture, mirroring the in-page budget.
+const MAX_XORIGIN_CSS = 1_500_000;
+const CSS_FETCH_TIMEOUT_MS = 4000;
 
 // Ephemeral by design — holds NO capture state (PRD §8). Every handler reads
 // from / writes to the durable IndexedDB store or chrome.storage and returns.
@@ -31,6 +35,36 @@ chrome.runtime.onMessage.addListener(
   },
 );
 
+// Fetch stylesheets the page context couldn't read (opaque cross-origin → CORS,
+// or blocked by the page's CSP connect-src). The worker isn't subject to either
+// and has <all_urls> host permission, so it fetches with credentials (cookies)
+// to also resolve auth-gated CSS. Best-effort: failures are silently omitted.
+async function fetchCrossOriginCss(
+  sheets: { href: string }[],
+): Promise<WorkerResponse> {
+  const css: Record<string, string> = {};
+  let total = 0;
+  const work = sheets.map(async ({ href }) => {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), CSS_FETCH_TIMEOUT_MS);
+      const res = await fetch(href, { credentials: 'include', signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) return;
+      const text = await res.text();
+      if (text && total < MAX_XORIGIN_CSS) {
+        const slice = text.slice(0, MAX_XORIGIN_CSS - total);
+        css[href] = absolutizeCss(slice, href);
+        total += slice.length;
+      }
+    } catch {
+      // CORS-after-all, network error, abort — leave it out.
+    }
+  });
+  await Promise.allSettled(work);
+  return { type: 'css:fetched', ok: true, css };
+}
+
 async function handle(
   message: AnyMessage,
   sender: chrome.runtime.MessageSender,
@@ -42,9 +76,13 @@ async function handle(
     case 'bundle:save':
       return saveBundle(message.bundle, sender);
 
+    case 'css:fetch':
+      return fetchCrossOriginCss(message.sheets);
+
     case 'bundle:list': {
-      const all = await bundleDb.all();
-      const bundles = all.sort((a, b) => b.createdAt - a.createdAt).map(toSummary);
+      // Reads the lightweight summary index only — never loads heavy payloads.
+      const summaries = await bundleDb.summaries();
+      const bundles = summaries.sort((a, b) => b.createdAt - a.createdAt);
       return { ok: true, bundles };
     }
 
@@ -222,7 +260,9 @@ async function findDupes(id: string): Promise<RuntimeResponse> {
   const current = await bundleDb.get(id);
   if (!current) return { ok: false, error: 'Bundle not found' };
   await primeRedaction();
-  const all = await bundleDb.all();
+  // Duplicate detection fingerprints network/console, so it needs full bundles
+  // (not summaries). Bounded by the MAX_REPORTS cap.
+  const all = await bundleDb.allBundles();
   const duplicates = await findDuplicates(current, all, cfg);
   return { ok: true, duplicates };
 }
@@ -293,25 +333,3 @@ chrome.commands.onCommand.addListener((command) => {
   })();
 });
 
-function toSummary(b: CaptureBundle): BundleSummary {
-  return {
-    id: b.id,
-    title: b.title,
-    createdAt: b.createdAt,
-    counts: {
-      console: b.console.length,
-      errors: b.console.filter((c) => c.level === 'error').length,
-      network: b.network.length,
-      failed: b.network.filter((n) => n.failed).length,
-      steps: b.steps.length,
-    },
-    hasTest: Boolean(b.generatedTest),
-    filed: b.filed
-      ? {
-          integration: b.filed.integration as IntegrationId,
-          identifier: b.filed.identifier,
-          url: b.filed.url,
-        }
-      : null,
-  };
-}

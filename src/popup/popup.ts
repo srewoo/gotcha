@@ -114,6 +114,11 @@ async function refresh(): Promise<void> {
   setDeepAvailability(debuggable);
   const deep = await toWorker({ type: 'deep:status' });
   if (deep && deep.ok && 'deep' in deep) ($('deep') as HTMLInputElement).checked = deep.deep;
+
+  // "Share last minute" is opt-in (Settings) — reveal the button only when on.
+  const { shareLastMinute } = await chrome.storage.local.get('shareLastMinute');
+  ($('share-last') as HTMLButtonElement).hidden = shareLastMinute !== true;
+
   await renderRecent();
 }
 
@@ -182,6 +187,20 @@ $('record').addEventListener('click', async () => {
     window.close(); // widget is now visible in the page; user reproduces, then Finish
   } else {
     $('sub').textContent = res && !res.ok ? res.error : 'Cannot record this page';
+  }
+});
+
+$('share-last').addEventListener('click', async () => {
+  const btn = $<HTMLButtonElement>('share-last');
+  btn.disabled = true;
+  btn.textContent = '⏪ Sharing…';
+  const res = await toTab({ type: 'capture:shareLastMinute' });
+  if (res && res.ok && 'reviewUrl' in res) {
+    window.close(); // review tab opened by the worker
+  } else {
+    btn.disabled = false;
+    btn.textContent = '⏪ Share last minute';
+    $('sub').textContent = res && !res.ok ? res.error : 'Nothing captured to share yet';
   }
 });
 

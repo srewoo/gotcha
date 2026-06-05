@@ -1,5 +1,6 @@
 import type { RuntimeResponse, BundleSummary } from '@shared/messaging';
 import type { CaptureBundle } from '@shared/types';
+import { MAX_REPORTS, WARN_REPORTS } from '@shared/capture-config';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -30,12 +31,37 @@ function renderKpis(rows: BundleSummary[]): void {
     <div class="kpi"><div class="n">${filed}</div><div class="l">Filed to tracker</div><div class="d">${pct(filed)} of reports</div></div>`;
 }
 
+// Warn as the report count approaches the cap. At MAX_REPORTS the oldest is
+// auto-deleted on the next save, so nudge the user to clear space first.
+function renderStorageWarning(rows: BundleSummary[]): void {
+  const el = $('storage-warning');
+  if (rows.length < WARN_REPORTS) {
+    el.hidden = true;
+    return;
+  }
+  const atCap = rows.length >= MAX_REPORTS;
+  el.hidden = false;
+  el.classList.toggle('at-cap', atCap);
+  el.innerHTML = atCap
+    ? `<b>Storage limit reached (${rows.length}/${MAX_REPORTS}).</b> New reports now delete the oldest automatically. Delete reports you no longer need to keep your history and keep the dashboard fast.`
+    : `<b>${rows.length} of ${MAX_REPORTS} reports stored.</b> At ${MAX_REPORTS} the oldest report is deleted automatically on each new capture. Delete some you no longer need — large histories also slow the dashboard.`;
+}
+
 function renderReports(rows: BundleSummary[]): void {
   const body = $('reports-body');
   $('reports-empty').hidden = rows.length > 0;
   body.innerHTML = rows
     .map((r) => {
-      const ev = `${r.counts.console}🖥 · ${r.counts.failed}⚠ · ${r.counts.steps}🔁`;
+      // Evidence chips: clear labels + tooltips, single line. The most
+      // diagnostic counts — failed requests, console errors, repro steps.
+      const chip = (n: number, label: string, title: string, alert = false): string =>
+        `<span class="ev-chip${alert && n > 0 ? ' ev-alert' : ''}" title="${title}"><b>${n}</b>${label}</span>`;
+      const ev =
+        `<div class="evidence">` +
+        chip(r.counts.failed, 'failed', 'Failed network requests', true) +
+        chip(r.counts.errors, 'errors', 'Console errors', true) +
+        chip(r.counts.steps, 'steps', 'Repro steps recorded') +
+        `</div>`;
       const test = r.hasTest ? '<span class="tag ok">✓ generated</span>' : '<span class="tag plain">–</span>';
       const filed = r.filed
         ? `<span class="tag ok">${esc(r.filed.identifier)}</span>`
@@ -44,7 +70,7 @@ function renderReports(rows: BundleSummary[]): void {
         <td class="mono">${gotId(r.id)}</td>
         <td>${esc(r.title)}</td>
         <td>${new Date(r.createdAt).toLocaleDateString()}</td>
-        <td class="mono">${ev}</td>
+        <td>${ev}</td>
         <td>${test}</td>
         <td>${filed}</td>
         <td class="col-actions"><button class="del-btn" data-del="${r.id}" title="Delete report" aria-label="Delete report">🗑</button></td>
@@ -120,6 +146,7 @@ function showView(view: View): void {
 async function init(): Promise<void> {
   const rows = await listSummaries();
   renderKpis(rows);
+  renderStorageWarning(rows);
   renderReports(rows);
   renderInsights(rows);
 

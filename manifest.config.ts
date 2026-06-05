@@ -7,7 +7,7 @@ import { defineManifest } from '@crxjs/vite-plugin';
 export default defineManifest({
   manifest_version: 3,
   name: 'Gotcha',
-  version: '0.1.0',
+  version: '1.0',
   description: 'One-click bug report that ships with a runnable regression test.',
   action: {
     default_popup: 'src/popup/popup.html',
