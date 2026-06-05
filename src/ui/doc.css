@@ -1,0 +1,46 @@
+/* Shared styling for standalone document pages (help, privacy policy).
+   Builds on tokens.css. */
+.doc {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+.doc-head {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 24px;
+  margin-bottom: 32px;
+}
+.doc-head .word {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+.doc-head .word .dot { color: var(--red); }
+.doc-head h1 {
+  font-size: 34px;
+  margin: 14px 0 8px;
+  letter-spacing: -0.5px;
+}
+.doc h2 {
+  font-size: 20px;
+  margin: 36px 0 12px;
+  letter-spacing: -0.3px;
+}
+.doc section:first-of-type { margin-top: 0; }
+.doc p { color: var(--ink2); margin: 0 0 14px; }
+.doc ul, .doc ol { color: var(--ink2); padding-left: 22px; margin: 0 0 14px; }
+.doc li { margin: 6px 0; }
+.doc b { color: var(--ink); }
+.doc a { color: var(--red); text-decoration: none; font-weight: 600; }
+.doc a:hover { text-decoration: underline; }
+.muted { color: var(--muted); }
+.doc-foot {
+  margin-top: 48px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--faint);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}

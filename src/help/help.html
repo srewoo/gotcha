@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gotcha — Help & Getting Started</title>
+    <meta
+      name="description"
+      content="How to use Gotcha: capture a reproducible bug report with screenshot, console, network, and repro steps, then file it to Linear, Jira, GitHub, or Slack."
+    />
+    <link rel="icon" type="image/svg+xml" href="../ui/icon.svg" />
+    <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="../ui/doc.css" />
+  </head>
+  <body>
+    <main class="doc">
+      <header class="doc-head">
+        <div class="word serif">🐛 Gotcha<span class="dot">.</span></div>
+        <h1 class="serif">Help &amp; Getting Started</h1>
+        <p class="muted">One-click bug reports that ship with a runnable regression test.</p>
+      </header>
+
+      <section>
+        <h2 class="serif">Capture a bug</h2>
+        <ol>
+          <li>On the page where the bug happens, click the Gotcha toolbar icon — or press <span class="mono">Ctrl+Shift+Y</span> (<span class="mono">⌘+Shift+Y</span> on Mac).</li>
+          <li>Press <b>Capture this bug</b>. Gotcha bundles the screenshot, console errors, failed network requests, a DOM snapshot, and your recent steps.</li>
+          <li>The <b>Review</b> screen opens so you can edit and redact before filing.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2 class="serif">Record reproduction steps</h2>
+        <p>
+          Click <b>Start a recording session</b> to capture the exact clicks and inputs that
+          trigger the bug. Those steps become the reproduction in your ticket — and the basis for
+          a generated Playwright regression test.
+        </p>
+      </section>
+
+      <section>
+        <h2 class="serif">Deep capture (optional)</h2>
+        <p>
+          Enable <b>Deep capture</b> in the popup to record full network response bodies and
+          requests that fired before the page loaded. It uses Chrome's debugger and shows a debug
+          banner while active. It is off by default and only attaches when you turn it on.
+        </p>
+      </section>
+
+      <section>
+        <h2 class="serif">Connect an issue tracker</h2>
+        <p>Open <b>Settings</b> to connect where reports are filed:</p>
+        <ul>
+          <li><b>Linear</b> — personal API key and target team id.</li>
+          <li><b>Jira</b> — Atlassian Cloud site, email, API token, project key.</li>
+          <li><b>GitHub</b> — fine-grained PAT (Issues: write) and the repo.</li>
+          <li><b>Slack</b> — an Incoming Webhook URL.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="serif">Privacy &amp; redaction</h2>
+        <p>
+          Redaction of secrets (auth headers, cookies, tokens, emails, card numbers, password
+          fields) is <b>on by default</b> on every report. Add your own redaction patterns or
+          block specific domains in Settings. Captures stay on your device until you file them.
+          See the <a href="../privacy/privacypolicy.html">Privacy Policy</a> for details.
+        </p>
+      </section>
+
+      <section>
+        <h2 class="serif">AI assistant (optional)</h2>
+        <p>
+          On the review screen you can ask an LLM to summarise the bug and suggest debugging steps.
+          Gotcha uses <b>your own API key</b> (OpenAI, Anthropic, or Google Gemini) and the report
+          is <b>always redacted before it is sent</b>.
+        </p>
+      </section>
+
+      <footer class="doc-foot">
+        <a href="../privacy/privacypolicy.html">Privacy Policy</a>
+        <span>·</span>
+        <a href="../options/options.html">Settings</a>
+      </footer>
+    </main>
+  </body>
+</html>

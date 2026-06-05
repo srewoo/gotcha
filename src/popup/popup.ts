@@ -190,4 +190,13 @@ $('open-dash').addEventListener('click', (e) => {
   void chrome.tabs.create({ url: chrome.runtime.getURL('src/dashboard/dashboard.html') });
 });
 
+const openPage = (id: string, page: string): void => {
+  $(id).addEventListener('click', (e) => {
+    e.preventDefault();
+    void chrome.tabs.create({ url: chrome.runtime.getURL(page) });
+  });
+};
+openPage('open-help', 'src/help/help.html');
+openPage('open-privacy', 'src/privacy/privacypolicy.html');
+
 void refresh();

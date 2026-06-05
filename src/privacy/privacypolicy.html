@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gotcha — Privacy Policy</title>
+    <meta
+      name="description"
+      content="Privacy policy for Gotcha, the Chrome extension that captures reproducible bug reports. Data stays on your device; nothing is sent to a Gotcha server."
+    />
+    <link rel="icon" type="image/svg+xml" href="../ui/icon.svg" />
+    <link rel="stylesheet" href="../ui/tokens.css" />
+    <link rel="stylesheet" href="../ui/doc.css" />
+  </head>
+  <body>
+    <main class="doc">
+      <header class="doc-head">
+        <div class="word serif">🐛 Gotcha<span class="dot">.</span></div>
+        <h1 class="serif">Privacy Policy</h1>
+        <p class="muted">Last updated: 5 June 2026</p>
+      </header>
+
+      <section>
+        <p>
+          Gotcha is a developer tool that captures a reproducible bug report — a screenshot,
+          console output, failed network requests, recorded reproduction steps, a DOM snapshot,
+          and browser environment — when <b>you</b> deliberately trigger a capture. This policy
+          explains exactly what Gotcha does and does not do with your data.
+        </p>
+      </section>
+
+      <section>
+        <h2 class="serif">The short version</h2>
+        <ul>
+          <li>Capture only runs on a deliberate user action (toolbar click or keyboard shortcut). Gotcha never records in the background.</li>
+          <li>Captured data is stored <b>locally on your device</b> (IndexedDB and extension storage). There is <b>no Gotcha server</b>.</li>
+          <li>Redaction of secrets (auth headers, cookies, tokens, emails, card numbers, password fields) is <b>on by default</b> on every report.</li>
+          <li>Data leaves your device only when <b>you file a report</b> to an issue tracker you configured, or use the optional AI assistant with your own API key.</li>
+          <li>Gotcha does not sell data, serve ads, or track your browsing.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="serif">What Gotcha collects</h2>
+        <p>When you trigger a capture, Gotcha may record, for the active page only:</p>
+        <ul>
+          <li><b>Page content & screenshots</b> — a visual capture and a DOM snapshot of the page under test.</li>
+          <li><b>Console & errors</b> — console messages and uncaught errors.</li>
+          <li><b>Network activity</b> — requests/responses (and, in opt-in deep-capture mode, response bodies) needed to reproduce the bug.</li>
+          <li><b>Reproduction steps</b> — the interactions you performed while recording.</li>
+          <li><b>Environment</b> — browser, OS, viewport, and the page URL/title.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="serif">Where your data goes</h2>
+        <ul>
+          <li><b>On your device:</b> all captures and settings stay local until you choose to act on them.</li>
+          <li><b>Issue trackers (you configure):</b> when you file a report, it is sent directly from your browser to the endpoint you set up — Linear, Jira, GitHub, or Slack — using credentials you provide.</li>
+          <li><b>AI assistant (optional):</b> if enabled, a <b>redacted</b> report is sent to the LLM provider you choose (OpenAI, Anthropic, or Google Gemini) using <b>your own API key</b>. Gotcha adds no server in between.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="serif">Permissions</h2>
+        <p>
+          Gotcha requests <span class="mono">activeTab</span>, <span class="mono">scripting</span>,
+          <span class="mono">storage</span>, <span class="mono">tabs</span>, and (opt-in)
+          <span class="mono">debugger</span>, plus host access so it can capture on whatever page
+          you are debugging and file the report to your tracker. Each is used solely for the
+          capture-and-file workflow described above.
+        </p>
+      </section>
+
+      <section>
+        <h2 class="serif">Your controls</h2>
+        <ul>
+          <li>Add extra redaction patterns and block specific domains in <b>Settings</b>.</li>
+          <li>Review, edit, and redact every report before filing.</li>
+          <li>Delete any stored report from the dashboard; uninstalling removes all local data.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="serif">Contact</h2>
+        <p class="muted">
+          Questions about this policy? Reach us at
+          <a href="mailto:privacy@gotcha.dev">privacy@gotcha.dev</a>.
+        </p>
+      </section>
+
+      <footer class="doc-foot">
+        <a href="../help/help.html">Help</a>
+        <span>·</span>
+        <a href="../options/options.html">Settings</a>
+      </footer>
+    </main>
+  </body>
+</html>

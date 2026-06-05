@@ -63,7 +63,12 @@ export default defineManifest({
   host_permissions: ['<all_urls>'],
   web_accessible_resources: [
     {
-      resources: ['src/review/review.html', 'src/dashboard/dashboard.html'],
+      resources: [
+        'src/review/review.html',
+        'src/dashboard/dashboard.html',
+        'src/help/help.html',
+        'src/privacy/privacypolicy.html',
+      ],
       matches: ['<all_urls>'],
     },
   ],
