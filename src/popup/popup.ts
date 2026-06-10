@@ -28,7 +28,7 @@ function isDebuggable(url: string | undefined): boolean {
 // extension is (re)loaded — a tab opened earlier (or open across a dev reload)
 // has none, so chrome.tabs.sendMessage rejects and every capture button looks
 // dead. Ping the tab; if nothing answers, inject the registered scripts on
-// demand (we already hold `scripting` + `activeTab`). Returns false only when
+// demand (we hold `scripting` + `<all_urls>` host access). Returns false only when
 // injection is impossible (restricted pages like chrome:// / the Web Store).
 async function ensureContentScript(tabId: number): Promise<boolean> {
   try {

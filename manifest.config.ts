@@ -55,7 +55,12 @@ export default defineManifest({
       all_frames: true,
     },
   ],
-  permissions: ['activeTab', 'scripting', 'storage', 'tabs'],
+  // No 'activeTab': host_permissions '<all_urls>' (below) already grants the
+  // scripting-target + captureVisibleTab access activeTab would, so it'd be a
+  // redundant over-request. 'scripting' powers on-demand re-injection of the
+  // content scripts into tabs that predate the extension load (see
+  // ensureContentScript in popup.ts).
+  permissions: ['scripting', 'storage', 'tabs'],
   // 'debugger' powers opt-in deep-capture mode (full response bodies +
   // pre-injection requests + CDP screencast). It's an OPTIONAL permission,
   // requested at runtime only when the user turns on Deep capture — so the
