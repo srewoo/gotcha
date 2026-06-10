@@ -60,7 +60,9 @@ export type RuntimeMessage =
   | { type: 'ai:analyze'; id: string }
   | { type: 'ai:duplicates'; id: string }
   | { type: 'ai:available' }
-  | { type: 'ai:test' };
+  | { type: 'ai:test' }
+  // LLM-authored Playwright test (redacts first); falls back to deterministic.
+  | { type: 'ai:generateTest'; id: string };
 
 // Likely-duplicate match surfaced before filing (#3). Defined here (not in the
 // ai module) so shared stays dependency-free.
@@ -104,6 +106,7 @@ export type RuntimeResponse =
   | { ok: true; analysis: AiAnalysis }
   | { ok: true; available: boolean }
   | { ok: true; duplicates: DuplicateMatch[] }
+  | { ok: true; test: { filename: string; source: string } }
   | { ok: true }
   | { ok: false; error: string };
 

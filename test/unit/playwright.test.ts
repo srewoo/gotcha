@@ -134,18 +134,44 @@ describe('generatePlaywrightTest — console error guard', () => {
     expect(source).toContain('TypeError: Cannot read property of null');
   });
 
-  it('should emit console guards for warn-level entries', () => {
+  it('should NOT guard warn-level entries (kept out of regression signal)', () => {
     const bundle = makeBundle({
       console: [
         { id: 'c1', level: 'warn', message: 'Deprecated API call detected', ts: 1700000000002 },
       ],
     });
     const { source } = generatePlaywrightTest(bundle);
-    expect(source).toContain('Deprecated API call detected');
-    expect(source).toContain('toBe(false)');
+    // warn alone is not an app error → no console collector emitted at all.
+    expect(source).not.toContain("page.on('console'");
   });
 
-  it('should not emit console collectors when there are no error/warn entries', () => {
+  it('should NOT guard third-party noise even at error level', () => {
+    const bundle = makeBundle({
+      console: [
+        { id: 'c1', level: 'error', message: 'Snowplow: argmap.useCookies is deprecated.', ts: 1 },
+        { id: 'c2', level: 'error', message: 'Unsatisfied version 10.1.1 of shared singleton module relay-runtime', ts: 2 },
+        { id: 'c3', level: 'error', message: 'Deprecation Notice: Sentry Usage is deprecated and removed from SHELL.', ts: 3 },
+      ],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect(source).not.toContain("page.on('console'");
+  });
+
+  it('should guard only the real app error when mixed with vendor noise', () => {
+    const bundle = makeBundle({
+      console: [
+        { id: 'c1', level: 'error', message: 'Snowplow: argmap.useCookies is deprecated.', ts: 1 },
+        { id: 'c2', level: 'error', message: 'Error: Api Fail:/maintenance-banner?cname=emagine', ts: 2 },
+        { id: 'c3', level: 'warn', message: 'Unsatisfied version 2.9.0 of shared singleton module react-intl', ts: 3 },
+      ],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect(source).toContain('Api Fail:/maintenance-banner');
+    expect(source).not.toContain('Snowplow');
+    expect(source).not.toContain('Unsatisfied version');
+  });
+
+  it('should not emit console collectors when there are no app errors', () => {
     const bundle = makeBundle({
       console: [
         { id: 'c1', level: 'log', message: 'Component rendered', ts: 1700000000002 },
@@ -434,5 +460,87 @@ describe('generatePlaywrightTest — AI enhancement', () => {
     expect(generatePlaywrightTest(bundle).source).toBe(
       generatePlaywrightTest(bundle, undefined).source,
     );
+  });
+
+  it('should emit a visible TODO (not silently drop) for a keypress step with no key', () => {
+    const bundle = makeBundle({
+      steps: [{ id: 's1', kind: 'keypress', label: 'pressed a key', ts: 1 }],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect(source).toContain('TODO: keypress recorded with no key');
+  });
+});
+
+describe('generatePlaywrightTest — step kinds', () => {
+  it('emits fill() for an input step and press(key) for a keypress step', () => {
+    const { source } = generatePlaywrightTest(
+      makeBundle({
+        steps: [
+          { id: 's1', kind: 'input', selector: '#email', label: 'Email', value: 'a@b.com', ts: 1 },
+          { id: 's2', kind: 'keypress', label: 'Enter', value: 'Enter', ts: 2 },
+        ],
+      }),
+    );
+    expect(source).toContain(".fill('a@b.com')");
+    expect(source).toContain("page.keyboard.press('Enter')");
+  });
+
+  it('uses TODO_value for a hidden/absent input value', () => {
+    const { source } = generatePlaywrightTest(
+      makeBundle({ steps: [{ id: 's1', kind: 'input', selector: '#x', label: 'X', value: '«hidden»', ts: 1 }] }),
+    );
+    expect(source).toContain("fill('TODO_value')");
+  });
+
+  it('comments an input step with no stable selector', () => {
+    const { source } = generatePlaywrightTest(
+      makeBundle({ steps: [{ id: 's1', kind: 'input', label: 'Mystery field', ts: 1 }] }),
+    );
+    expect(source).toContain('no stable selector captured');
+  });
+
+  it('emits press(Enter) for a submit step and a comment when it has no selector', () => {
+    const withSel = generatePlaywrightTest(
+      makeBundle({ steps: [{ id: 's1', kind: 'submit', selector: '#form', label: 'Submit', ts: 1 }] }),
+    ).source;
+    expect(withSel).toContain(".press('Enter')");
+    const noSel = generatePlaywrightTest(
+      makeBundle({ steps: [{ id: 's1', kind: 'submit', label: 'Submit', ts: 1 }] }),
+    ).source;
+    expect(noSel).toContain('// submit Submit');
+  });
+
+  it('emits an alternative-selectors comment when candidates exist', () => {
+    const { source } = generatePlaywrightTest(
+      makeBundle({
+        steps: [
+          {
+            id: 's1',
+            kind: 'click',
+            selector: '#go',
+            selectorCandidates: ['#go', '.btn-primary', 'button'],
+            label: 'Go',
+            ts: 1,
+          },
+        ],
+      }),
+    );
+    expect(source).toContain('Alternative selectors');
+    expect(source).toContain('.btn-primary');
+  });
+
+  it('falls back to getByText when a click step has no selector', () => {
+    const { source } = generatePlaywrightTest(
+      makeBundle({ steps: [{ id: 's1', kind: 'click', label: 'Save changes', ts: 1 }] }),
+    );
+    expect(source).toContain("getByText('Save changes'");
+  });
+
+  it('emits a URL end-state assertion when the last step is a navigate and nothing failed', () => {
+    const { source } = generatePlaywrightTest(
+      makeBundle({ steps: [{ id: 's1', kind: 'navigate', label: 'https://app.example.com/home', ts: 1 }] }),
+    );
+    expect(source).toContain('toHaveURL');
+    expect(source).toContain('confirm this is the correct expected URL');
   });
 });

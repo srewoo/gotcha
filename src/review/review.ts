@@ -1,8 +1,9 @@
 import type { RuntimeResponse, IntegrationId, FiledResult } from '@shared/messaging';
 import type { CaptureBundle } from '@shared/types';
-import { generatePlaywrightTest } from '../testgen/playwright';
+import { generatePlaywrightTest, type GeneratedTest } from '../testgen/playwright';
 import { Annotator, type Tool } from './annotate';
 import { mountReplay } from './replay';
+import { mountScreencast } from './screencast';
 import { exportBundleHtml } from '../share/export-html';
 import { buildHar } from '../share/har';
 
@@ -44,23 +45,30 @@ async function generateTest(id: string, b: CaptureBundle): Promise<void> {
   btn.disabled = true;
   // Reflect the edited title before slugging the test name.
   b.title = $<HTMLInputElement>('title').value || b.title;
+  // Persist edits (title/steps) so the worker reads the current bundle when the
+  // LLM authors the spec.
+  await chrome.runtime.sendMessage({ type: 'bundle:setSteps', id, steps: b.steps });
 
-  // Auto-enhance: if an AI key is configured and we haven't analysed yet, run
-  // one analysis to get AI-chosen selectors + an end-state assertion, then fold
-  // them into the test. Falls back silently to the deterministic generator.
-  if (aiAvailable && !b.aiAnalysis) {
-    btn.textContent = 'Enhancing with AI…';
-    const res = (await chrome.runtime.sendMessage({ type: 'ai:analyze', id })) as
+  let test: GeneratedTest | null = null;
+
+  // LLM-first: the worker authors the whole spec (redacting before it reaches
+  // the model). The worker itself falls back to the deterministic generator on
+  // any LLM/parse error, so a configured key always yields a test.
+  if (aiAvailable) {
+    btn.textContent = 'Generating with AI…';
+    const res = (await chrome.runtime.sendMessage({ type: 'ai:generateTest', id })) as
       | RuntimeResponse
       | undefined;
-    if (res && res.ok && 'analysis' in res) {
-      b.aiAnalysis = res.analysis;
-      renderAi(res.analysis, b);
-    }
+    if (res && res.ok && 'test' in res) test = res.test;
   }
 
-  btn.textContent = 'Generating…';
-  const test = generatePlaywrightTest(b, b.aiAnalysis?.testHints);
+  // No key (or messaging failed) → deterministic generator, client-side, folding
+  // in any prior AI analysis hints.
+  if (!test) {
+    btn.textContent = 'Generating…';
+    test = generatePlaywrightTest(b, b.aiAnalysis?.testHints);
+  }
+
   b.generatedTest = test;
   await chrome.runtime.sendMessage({
     type: 'bundle:attachTest',
@@ -192,6 +200,7 @@ async function load(): Promise<void> {
   $('loading').hidden = true;
   $('review').hidden = false;
   initScreenshot(bundle);
+  initScreencast(bundle);
   initReplay(bundle);
   setupSteps(id, bundle);
 
@@ -418,6 +427,19 @@ function initReplay(b: CaptureBundle): void {
   mountReplay(host, b);
 }
 
+// Mount the true-pixel screencast player when deep-capture recorded frames.
+function initScreencast(b: CaptureBundle): void {
+  const sect = $('screencast-sect');
+  const frames = b.screencast?.length ?? 0;
+  if (frames === 0) {
+    sect.hidden = true;
+    return;
+  }
+  sect.hidden = false;
+  $('screencast-count').textContent = `${frames} frames`;
+  mountScreencast($('screencast'), b);
+}
+
 function show(stepId: 'review' | 'file-step' | 'success'): void {
   for (const s of ['review', 'file-step', 'success']) $(s).hidden = s !== stepId;
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -439,9 +461,11 @@ async function file(id: string, bundle: CaptureBundle): Promise<void> {
     await chrome.runtime.sendMessage({ type: 'bundle:setScreenshot', id, dataUrl });
   }
   if (withTest) {
-    // Fold in the AI's chosen selectors + end-state assertion when present (#2);
-    // deterministic baseline otherwise.
-    const test = generatePlaywrightTest(bundle, bundle.aiAnalysis?.testHints);
+    // Reuse a test the user already generated (which may be the richer
+    // LLM-authored spec); otherwise produce the deterministic baseline now,
+    // folding in any AI analysis hints (#2).
+    const test =
+      bundle.generatedTest ?? generatePlaywrightTest(bundle, bundle.aiAnalysis?.testHints);
     bundle.generatedTest = test;
     await chrome.runtime.sendMessage({
       type: 'bundle:attachTest',

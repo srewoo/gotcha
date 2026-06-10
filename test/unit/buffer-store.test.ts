@@ -45,50 +45,50 @@ describe('BufferStore — Ring eviction', () => {
     store = new BufferStore();
   });
 
-  it('should evict the oldest console entry when buffer exceeds max (500)', () => {
+  it('should evict the oldest console entry when buffer exceeds max (2000)', () => {
     // Fill console ring to capacity
-    for (let i = 0; i < 500; i++) {
+    for (let i = 0; i < 2000; i++) {
       store.console.push(makeConsoleEntry(`c${i}`));
     }
-    expect(store.console.all().length).toBe(500);
+    expect(store.console.all().length).toBe(2000);
     expect(store.console.all()[0]!.id).toBe('c0');
 
     // Push one more — c0 should be evicted
-    store.console.push(makeConsoleEntry('c500'));
-    expect(store.console.all().length).toBe(500);
+    store.console.push(makeConsoleEntry('c2000'));
+    expect(store.console.all().length).toBe(2000);
     expect(store.console.all()[0]!.id).toBe('c1');
-    expect(store.console.all()[499]!.id).toBe('c500');
+    expect(store.console.all()[1999]!.id).toBe('c2000');
   });
 
-  it('should evict the oldest network entry when buffer exceeds max (300)', () => {
-    for (let i = 0; i < 300; i++) {
+  it('should evict the oldest network entry when buffer exceeds max (1000)', () => {
+    for (let i = 0; i < 1000; i++) {
       store.network.push(makeNetworkEntry(`n${i}`));
     }
-    expect(store.network.all().length).toBe(300);
+    expect(store.network.all().length).toBe(1000);
 
-    store.network.push(makeNetworkEntry('n300'));
-    expect(store.network.all().length).toBe(300);
+    store.network.push(makeNetworkEntry('n1000'));
+    expect(store.network.all().length).toBe(1000);
     expect(store.network.all()[0]!.id).toBe('n1');
-    expect(store.network.all()[299]!.id).toBe('n300');
+    expect(store.network.all()[999]!.id).toBe('n1000');
   });
 
-  it('should evict the oldest step when buffer exceeds max (200)', () => {
-    for (let i = 0; i < 200; i++) {
+  it('should evict the oldest step when buffer exceeds max (400)', () => {
+    for (let i = 0; i < 400; i++) {
       store.steps.push(makeStep(`s${i}`));
     }
-    store.steps.push(makeStep('s200'));
-    expect(store.steps.all().length).toBe(200);
+    store.steps.push(makeStep('s400'));
+    expect(store.steps.all().length).toBe(400);
     expect(store.steps.all()[0]!.id).toBe('s1');
   });
 
-  it('should evict the oldest replay event when buffer exceeds max (3000)', () => {
-    for (let i = 0; i < 3000; i++) {
+  it('should evict the oldest replay event when buffer exceeds max (5000)', () => {
+    for (let i = 0; i < 5000; i++) {
       store.replay.push(makeReplayEvent(i));
     }
-    store.replay.push(makeReplayEvent(9999));
-    expect(store.replay.all().length).toBe(3000);
+    store.replay.push(makeReplayEvent(99999));
+    expect(store.replay.all().length).toBe(5000);
     expect(store.replay.all()[0]!.y).toBe(1);
-    expect(store.replay.all()[2999]!.y).toBe(9999);
+    expect(store.replay.all()[4999]!.y).toBe(99999);
   });
 
   it('should maintain insertion order up to capacity', () => {
@@ -313,16 +313,16 @@ describe('BufferStore — pinned initial snapshot', () => {
   it('should keep the initial snapshot at the front after the ring overflows', () => {
     const store = new BufferStore();
     store.pushReplay(makeSnapshot(0, '<html data-initial></html>')); // initial styled frame
-    // Flood far past the 3000-event replay cap with mutations.
-    for (let i = 1; i <= 3500; i++) {
+    // Flood far past the 5000-event replay cap with mutations.
+    for (let i = 1; i <= 6000; i++) {
       store.pushReplay({ t: i, kind: 'mutation', html: `<body>${i}</body>` });
     }
     const all = store.replay.all();
     // The initial snapshot survived and is still the seed at the front…
     expect(all[0]!.kind).toBe('snapshot');
     expect(all[0]!.html).toContain('data-initial');
-    // …while the ring itself stayed bounded: pinned head (1) + capped items (3000).
-    expect(all.length).toBe(3001);
+    // …while the ring itself stayed bounded: pinned head (1) + capped items (5000).
+    expect(all.length).toBe(5001);
   });
 
   it('should update the pin to the enriched snapshot emitted at the same t', () => {

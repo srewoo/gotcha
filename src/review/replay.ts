@@ -156,15 +156,23 @@ export function mountReplay(host: HTMLElement, bundle: CaptureBundle): void {
   // enriched one with fetched cross-origin CSS — so pick the last (enriched).
   const baseHref = bundle.environment?.url ?? '';
   const initialT = firstSnapshot.t;
+  // Pick the head from the snapshot that ACTUALLY carries inlined CSS (the
+  // async-enriched frame, marked data-gotcha-inline). WHY: cross-origin CSS is
+  // fetched after the readable-only frame is emitted at the same `t`, and on a
+  // long recording the t=0 frame can roll out of the ring while a later styled
+  // keyframe survives. The old logic only looked at t===initialT and so fell
+  // back to an un-styled head whenever the enriched t=0 frame was absent —
+  // exactly the "replay renders unstyled on some pages" symptom. Scan ALL
+  // snapshots, richest inlined-CSS frame first.
+  const isFrame = (e: ReplayEvent): boolean =>
+    (e.kind === 'snapshot' || e.kind === 'mutation') && e.html != null;
+  const styled = events
+    .filter((e) => isFrame(e) && e.html!.includes('data-gotcha-inline'))
+    .sort((a, b) => b.html!.length - a.html!.length);
   const headSource =
-    events
-      .filter(
-        (e) =>
-          (e.kind === 'snapshot' || e.kind === 'mutation') &&
-          e.t === initialT &&
-          e.html != null,
-      )
-      .pop() ?? firstSnapshot;
+    styled[0] ??
+    events.filter((e) => isFrame(e) && e.t === initialT).pop() ??
+    firstSnapshot;
   const headExtras = extractHeadExtras(headSource.html ?? '');
   const wrap = (html: string): string => composeFrame(html, headExtras, baseHref);
 
@@ -229,9 +237,19 @@ export function mountReplay(host: HTMLElement, bundle: CaptureBundle): void {
   bar.appendChild(timeEl);
   bar.appendChild(maxBtn);
 
+  // Honest framing (PRD): the player is a DOM reconstruction, not a video
+  // recording — it can't reproduce canvas/WebGL/<video> pixels, nested iframes,
+  // or stylesheets that were cross-origin without CORS. Say so, so a degraded
+  // frame reads as a known limitation rather than a bug.
+  const note = document.createElement('p');
+  note.className = 'replay-note';
+  note.textContent =
+    'Reconstructed from the captured DOM — not a pixel video. Canvas/WebGL/<video>, nested iframes, and CORS-restricted CSS may not render. Enable Deep capture for a true pixel recording.';
+
   host.appendChild(viewportWrap);
   host.appendChild(viewportLabel);
   host.appendChild(bar);
+  host.appendChild(note);
 
   // ── Playback state ────────────────────────────────────────────────────────
 

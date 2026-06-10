@@ -97,6 +97,16 @@
   line-height: 1;
 }
 
+/* Honest limitation caption beneath the player. */
+.replay-note {
+  margin: 0;
+  padding: 6px 10px 10px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--faint, #b5b1a6);
+  background: var(--paper2, #f3f0e8);
+}
+
 /* ── Transport bar ───────────────────────────────────────────────────────── */
 .replay-bar {
   display: flex;

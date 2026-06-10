@@ -6,3 +6,5 @@ dist/
 .env.local
 *.zip
 .playwright-mcp
+coverage/
+test-results/

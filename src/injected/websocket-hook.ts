@@ -3,10 +3,10 @@ import { uid } from '@shared/uid';
 import type { NetworkEntry, SocketFrame } from '@shared/types';
 
 // Matches the cap used in network-hook.ts — keep in sync.
-const MAX_BODY = 16_384;
+const MAX_BODY = 65_536;
 // Cap the number of frames stored per socket so a chatty connection cannot
 // bloat the in-memory buffer indefinitely.
-const MAX_FRAMES = 50;
+const MAX_FRAMES = 200;
 
 function clip(text: string): string {
   return text.length > MAX_BODY ? `${text.slice(0, MAX_BODY)}… [${text.length} bytes total]` : text;
@@ -99,7 +99,12 @@ export function installWebSocketHook(): void {
       });
 
       // --- onerror / onclose: emit final summary with all frames ---
-      const emitClose = (failed: boolean) => {
+      // Track whether an error fired so a subsequent close can't downgrade the
+      // entry back to "clean". The raw WebSocket `error` event carries no detail
+      // by design (security), so the diagnostic info comes from the CloseEvent
+      // code/reason — surface it instead of a bare, useless "WebSocket error".
+      let errored = false;
+      const emitClose = (failed: boolean, detail?: string) => {
         try {
           const entry: NetworkEntry = {
             // Reuse the socket's id so this SUPERSEDES the "open" entry rather
@@ -109,7 +114,9 @@ export function installWebSocketHook(): void {
             url: entryUrl,
             method: 'GET',
             status: failed ? 0 : 1000, // 1000 = normal closure
-            statusText: failed ? 'WebSocket error' : 'Connection closed',
+            statusText: failed
+              ? `WebSocket error${detail ? ` (${detail})` : ''}`
+              : 'Connection closed',
             durationMs: Date.now() - this.__gotchaTs,
             failed,
             ts: this.__gotchaTs,
@@ -124,6 +131,7 @@ export function installWebSocketHook(): void {
 
       this.addEventListener('error', () => {
         try {
+          errored = true;
           emitClose(true);
         } catch {
           // never throw
@@ -133,7 +141,11 @@ export function installWebSocketHook(): void {
       this.addEventListener('close', (event: CloseEvent) => {
         try {
           // CloseEvent.wasClean is false when the server closed abnormally.
-          emitClose(!event.wasClean);
+          const failed = errored || !event.wasClean;
+          const detail = failed
+            ? `code ${event.code}${event.reason ? ` ${event.reason}` : ''}${event.wasClean ? '' : ' abnormal'}`.trim()
+            : undefined;
+          emitClose(failed, detail);
         } catch {
           // never throw
         }

@@ -33,12 +33,12 @@ const MAX_INPUT_VALUE = 120;
 
 // Cap each snapshot's HTML so a large DOM can't bloat memory / IndexedDB. A
 // snapshot beyond this is truncated (replay still renders the head of it).
-const MAX_SNAPSHOT_HTML = 250_000;
+const MAX_SNAPSHOT_HTML = 500_000;
 
 // The initial full snapshot also carries inlined CSS (see collectInlineCss),
 // so it gets a larger budget. Only ONE per recording, so the cost is bounded.
-const MAX_FULL_SNAPSHOT_HTML = 2_000_000;
-const MAX_INLINE_CSS = 1_500_000;
+const MAX_FULL_SNAPSHOT_HTML = 4_000_000;
+const MAX_INLINE_CSS = 3_000_000;
 
 function capHtml(html: string, max: number = MAX_SNAPSHOT_HTML): string {
   return html.length > max
@@ -133,7 +133,10 @@ async function collectInlineCssAsync(): Promise<string> {
           .then((res) => (res.ok ? res.text() : ''))
           .then((text) => {
             if (text && size < MAX_INLINE_CSS) {
-              const css = absolutizeCss(text, href);
+              // Slice to the remaining budget BEFORE absolutizing so a single
+              // large sheet can't push `size` past MAX_INLINE_CSS (the readable
+              // path and the worker both honour the budget the same way).
+              const css = absolutizeCss(text.slice(0, MAX_INLINE_CSS - size), href);
               parts[slot] = css;
               size += css.length;
             }

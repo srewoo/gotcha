@@ -11,11 +11,38 @@ import type { ConsoleLevel } from '@shared/types';
 
 const LEVELS: ConsoleLevel[] = ['log', 'info', 'warn', 'error', 'debug'];
 
-function serializeArg(arg: unknown): string {
+// Exported for unit testing.
+export function serializeArg(arg: unknown): string {
   if (typeof arg === 'string') return arg;
   if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
+  if (arg === undefined) return 'undefined';
+  if (typeof arg === 'function') return `[Function: ${arg.name || 'anonymous'}]`;
+  if (typeof arg === 'bigint' || typeof arg === 'symbol') return String(arg);
+  // DOM Events (incl. WebSocket error/close, ErrorEvent) stringify to a useless
+  // "[object Event]" or "{}". Pull the diagnostic fields out instead — this is
+  // why captured logs like "WebSocket error: [object Event]" carried no detail.
+  if (typeof Event !== 'undefined' && arg instanceof Event) {
+    const e = arg as Event & { message?: unknown; code?: unknown; reason?: unknown };
+    const bits = [`type=${e.type}`];
+    if (typeof e.message === 'string' && e.message) bits.push(`message=${e.message}`);
+    if (typeof e.code === 'number') bits.push(`code=${e.code}`);
+    if (typeof e.reason === 'string' && e.reason) bits.push(`reason=${e.reason}`);
+    return `[${arg.constructor?.name ?? 'Event'} ${bits.join(' ')}]`;
+  }
   try {
-    return JSON.stringify(arg);
+    // Circular-safe stringify: a plain JSON.stringify throws on cycles, which
+    // previously collapsed the whole arg to "[object Object]" and lost the log.
+    const seen = new WeakSet<object>();
+    const json = JSON.stringify(arg, (_k, v: unknown) => {
+      if (typeof v === 'object' && v !== null) {
+        if (seen.has(v)) return '[Circular]';
+        seen.add(v);
+      }
+      if (typeof v === 'bigint') return String(v);
+      if (typeof v === 'function') return `[Function: ${(v as { name?: string }).name || 'anonymous'}]`;
+      return v;
+    });
+    return json ?? String(arg);
   } catch {
     return String(arg);
   }

@@ -1,6 +1,7 @@
 import type { CaptureBundle, AiAnalysis, AiAnalysisResult as AiAnalysisResultT } from '@shared/types';
 import { AiAnalysisResult } from '@shared/types';
 import { describeBundle } from '../integrations/format';
+import { filterAppErrors } from '@shared/console-noise';
 
 // Bring-your-own-key AI triage. Runs in the service worker (extension origin),
 // so it can fetch cross-origin under <all_urls>. The bundle handed in MUST
@@ -17,7 +18,12 @@ export interface AiConfig {
   model: string;
 }
 
-const MAX_EVIDENCE = 8000;
+const MAX_EVIDENCE = 16000;
+
+// Upper bound on model output tokens, applied uniformly across providers.
+// Generous so full Playwright specs and long triage JSON are never truncated;
+// it's a ceiling billed on actual output, not a fixed cost.
+const MAX_OUTPUT_TOKENS = 12000;
 
 const SYSTEM = [
   'You are a senior engineer triaging a web application bug report.',
@@ -94,7 +100,15 @@ interface ProviderRequest {
 }
 
 // One place that knows each provider's endpoint, auth, and request shape.
-function buildRequest(cfg: AiConfig, system: string, user: string, stream: boolean): ProviderRequest {
+// `json` asks the provider for a strict JSON object (triage/dupe detection);
+// codegen passes false so Gemini doesn't force a JSON mime-type onto TS source.
+function buildRequest(
+  cfg: AiConfig,
+  system: string,
+  user: string,
+  stream: boolean,
+  json: boolean,
+): ProviderRequest {
   switch (cfg.provider) {
     case 'anthropic':
       return {
@@ -106,7 +120,7 @@ function buildRequest(cfg: AiConfig, system: string, user: string, stream: boole
           // Required for direct browser/extension-origin calls.
           'anthropic-dangerous-direct-browser-access': 'true',
         },
-        body: { model: cfg.model, max_tokens: 1024, stream, system, messages: [{ role: 'user', content: user }] },
+        body: { model: cfg.model, max_tokens: MAX_OUTPUT_TOKENS, stream, system, messages: [{ role: 'user', content: user }] },
       };
     case 'gemini': {
       const method = stream ? 'streamGenerateContent?alt=sse&' : 'generateContent?';
@@ -116,8 +130,13 @@ function buildRequest(cfg: AiConfig, system: string, user: string, stream: boole
         body: {
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: 'user', parts: [{ text: user }] }],
-          // Gemini can be told to emit raw JSON — perfect for our schema.
-          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' },
+          // Gemini can be told to emit raw JSON — perfect for our schema, but
+          // wrong for code generation, so it's gated on `json`.
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: MAX_OUTPUT_TOKENS,
+            ...(json ? { responseMimeType: 'application/json' } : {}),
+          },
         },
       };
     }
@@ -128,6 +147,7 @@ function buildRequest(cfg: AiConfig, system: string, user: string, stream: boole
         body: {
           model: cfg.model,
           temperature: 0.1,
+          max_tokens: MAX_OUTPUT_TOKENS,
           stream,
           messages: [
             { role: 'system', content: system },
@@ -160,7 +180,11 @@ function extractContent(cfg: AiConfig, json: unknown): string {
   let content: string | undefined;
   if (cfg.provider === 'anthropic') content = (json as AnthropicResp).content?.[0]?.text;
   else if (cfg.provider === 'gemini')
-    content = (json as GeminiResp).candidates?.[0]?.content?.parts?.[0]?.text;
+    // Gemini can split a response across multiple parts — join them all, not
+    // just parts[0], or long answers get silently truncated.
+    content = (json as GeminiResp).candidates?.[0]?.content?.parts
+      ?.map((p) => p.text ?? '')
+      .join('');
   else content = (json as OpenAiResp).choices?.[0]?.message?.content;
   if (!content) throw new Error(`Empty response from ${PROVIDER_LABEL[cfg.provider]}`);
   return content;
@@ -170,12 +194,19 @@ function extractContent(cfg: AiConfig, json: unknown): string {
 function extractDelta(cfg: AiConfig, json: unknown): string {
   if (cfg.provider === 'anthropic') return (json as AnthropicResp).delta?.text ?? '';
   if (cfg.provider === 'gemini')
-    return (json as GeminiResp).candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    return (
+      (json as GeminiResp).candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
+    );
   return (json as OpenAiResp).choices?.[0]?.delta?.content ?? '';
 }
 
-export async function chat(cfg: AiConfig, system: string, user: string): Promise<string> {
-  const req = buildRequest(cfg, system, user, false);
+export async function chat(
+  cfg: AiConfig,
+  system: string,
+  user: string,
+  json = true,
+): Promise<string> {
+  const req = buildRequest(cfg, system, user, false, json);
   const res = await fetch(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify(req.body) });
   if (!res.ok) await fail(res, PROVIDER_LABEL[cfg.provider]);
   return extractContent(cfg, await res.json());
@@ -189,7 +220,7 @@ export async function chatStream(
   user: string,
   onDelta: (text: string) => void,
 ): Promise<string> {
-  const req = buildRequest(cfg, system, user, true);
+  const req = buildRequest(cfg, system, user, true, true);
   const res = await fetch(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify(req.body) });
   if (!res.ok || !res.body) {
     if (!res.ok) await fail(res, PROVIDER_LABEL[cfg.provider]);
@@ -243,4 +274,86 @@ export async function analyzeBundleStream(
 ): Promise<AiAnalysis> {
   const full = await chatStream(cfg, SYSTEM, evidence(bundle), onDelta);
   return stamp(parseResult(full), cfg);
+}
+
+// ─── Playwright test generation (LLM-first; deterministic fallback elsewhere) ─
+//
+// The LLM authors the whole spec from the capture; the caller (worker) only
+// invokes this on an ALREADY-REDACTED bundle, and falls back to the
+// deterministic generator (testgen/playwright.ts) on no-key or any error.
+
+const TEST_SYSTEM = [
+  'You are a senior test engineer. Generate ONE Playwright regression test',
+  '(TypeScript, @playwright/test) from a captured web-app bug report.',
+  'The test must reproduce the recorded user steps and prove the bug is fixed:',
+  '- Drive each step in order with resilient locators — prefer getByRole /',
+  '  getByText / getByTestId over raw CSS. Choose selectors ONLY from the',
+  '  candidate list given per step; pick the most stable.',
+  '- For every failed network request, assert it now returns a status < 400',
+  '  (use page.waitForResponse with a pathname glob, not full URLs with tokens).',
+  '- Assert that none of the captured console errors recur.',
+  '- Add ONE concrete end-state assertion proving the fixed behaviour.',
+  'Output rules: emit ONLY the TypeScript source — no markdown fences, no prose.',
+  "Begin with: import { test, expect } from '@playwright/test';",
+  'Call test.use({ baseURL, viewport }) so it matches the capture exactly.',
+  'Where a value or assertion genuinely needs a human decision, leave a',
+  '// TODO comment rather than guessing.',
+].join('\n');
+
+// Codegen evidence: steps + their selector candidates, the failed requests and
+// console errors to guard, and the run context (baseURL, viewport, title).
+function testEvidence(bundle: CaptureBundle): string {
+  let baseURL = bundle.environment.url;
+  try {
+    baseURL = new URL(bundle.environment.url).origin;
+  } catch {
+    /* keep raw url */
+  }
+  const steps = bundle.steps
+    .map((s) => {
+      const cands = s.selectorCandidates?.length
+        ? ` candidates=[${s.selectorCandidates.join(' | ')}]`
+        : s.selector
+          ? ` selector=${s.selector}`
+          : '';
+      const val = s.value && s.value !== '«hidden»' ? ` value=${JSON.stringify(s.value)}` : '';
+      return `- stepId=${s.id} ${s.kind} "${s.label}"${cands}${val}`;
+    })
+    .join('\n');
+  const failed = bundle.network
+    .filter((n) => n.failed)
+    .map((n) => `- ${n.method} ${n.url} → ${n.status}`)
+    .join('\n');
+  const errors = filterAppErrors(bundle.console)
+    .map((c) => `- [${c.level}] ${c.message.slice(0, 200)}`)
+    .join('\n');
+  const { width, height } = bundle.environment.viewport;
+  const text = [
+    `Title: ${bundle.title}`,
+    `baseURL: ${baseURL}`,
+    `viewport: ${width}x${height}`,
+    `\n## Recorded steps (choose selectors from candidates)\n${steps || '_none_'}`,
+    `\n## Failed network requests (assert each now < 400)\n${failed || '_none_'}`,
+    `\n## Console errors/warnings (assert none recur)\n${errors || '_none_'}`,
+  ].join('\n');
+  return text.length > MAX_EVIDENCE ? `${text.slice(0, MAX_EVIDENCE)}\n…[truncated]` : text;
+}
+
+// A model may wrap code in a ```ts fence despite instructions — pull it out.
+function stripFences(s: string): string {
+  const m = s.match(/```(?:ts|typescript)?\s*([\s\S]*?)```/i);
+  return (m && m[1] ? m[1] : s).trim();
+}
+
+// Generate a Playwright spec from an ALREADY-REDACTED bundle. Throws if the
+// output doesn't look like a Playwright test so the caller can fall back.
+export async function generatePlaywrightTestWithAi(
+  bundle: CaptureBundle,
+  cfg: AiConfig,
+): Promise<string> {
+  const source = stripFences(await chat(cfg, TEST_SYSTEM, testEvidence(bundle), false));
+  if (!source.includes('@playwright/test') || !/\btest\s*\(/.test(source)) {
+    throw new Error('Model did not return a Playwright test');
+  }
+  return source;
 }

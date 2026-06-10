@@ -1,4 +1,5 @@
 import type { CaptureBundle, ReproStep, NetworkEntry, ConsoleEntry } from '@shared/types';
+import { filterAppErrors } from '@shared/console-noise';
 
 // ─── Playwright test generator ───────────────────────────────────────────────
 //
@@ -125,10 +126,14 @@ function stepToCode(step: ReproStep, isFirstNav: boolean): string | null {
     }
 
     case 'keypress':
-      return step.value ? `  await page.keyboard.press(${q(step.value)});` : null;
+      return step.value
+        ? `  await page.keyboard.press(${q(step.value)});`
+        : `  // TODO: keypress recorded with no key — add the expected key manually.`;
 
     default:
-      return null;
+      // Exhaustive over ReproStepKind today; if the enum grows, surface the
+      // unhandled step as a visible TODO rather than silently dropping it.
+      return `  // TODO: unsupported step kind '${(step as ReproStep).kind}' — drive this interaction manually.`;
   }
 }
 
@@ -196,7 +201,9 @@ function consoleErrorAssertion(consoleEntries: ConsoleEntry[]): {
   setup: string;
   check: string;
 } {
-  const errors = consoleEntries.filter((e) => e.level === 'error' || e.level === 'warn');
+  // Only app-origin errors — third-party deprecation / version-skew noise would
+  // produce flaky guards that fail on unrelated dependency churn.
+  const errors = filterAppErrors(consoleEntries);
   if (errors.length === 0) return { setup: '', check: '' };
 
   // Deduplicate by message prefix (first 120 chars) to avoid overly specific

@@ -24,10 +24,50 @@ function isDebuggable(url: string | undefined): boolean {
   return /^(https?|file):/i.test(url);
 }
 
+// Content scripts only auto-inject on navigations that happen AFTER the
+// extension is (re)loaded — a tab opened earlier (or open across a dev reload)
+// has none, so chrome.tabs.sendMessage rejects and every capture button looks
+// dead. Ping the tab; if nothing answers, inject the registered scripts on
+// demand (we already hold `scripting` + `activeTab`). Returns false only when
+// injection is impossible (restricted pages like chrome:// / the Web Store).
+async function ensureContentScript(tabId: number): Promise<boolean> {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'capture:status' });
+    return true; // a content script is already present and answering
+  } catch {
+    // Not present (or not yet) — fall through and inject.
+  }
+  // `world` isn't in this @types/chrome's manifest type yet, but it's a valid
+  // MV3 field and we need it to inject the MAIN-world hooks into the right realm.
+  const scripts = (chrome.runtime.getManifest().content_scripts ?? []) as Array<{
+    js?: string[];
+    all_frames?: boolean;
+    world?: 'MAIN' | 'ISOLATED';
+  }>;
+  for (const cs of scripts) {
+    const files = cs.js ?? [];
+    if (files.length === 0) continue;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: cs.all_frames ?? false },
+        files,
+        world: cs.world === 'MAIN' ? 'MAIN' : 'ISOLATED',
+        injectImmediately: true,
+      });
+    } catch {
+      return false; // restricted page — Chrome won't allow injection here
+    }
+  }
+  // Let the freshly-injected ISOLATED listener register before we message it.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return true;
+}
+
 // Talk to the content script in the active tab.
 async function toTab(message: RuntimeMessage): Promise<RuntimeResponse | undefined> {
   const id = await activeTabId();
   if (id === undefined) return undefined;
+  await ensureContentScript(id);
   try {
     return (await chrome.tabs.sendMessage(id, message)) as RuntimeResponse;
   } catch {
@@ -166,6 +206,17 @@ $('deep').addEventListener('change', async (ev) => {
     box.checked = false;
     $('sub').textContent = 'Deep capture needs a regular web page (not a chrome:// or extension page).';
     return;
+  }
+  // 'debugger' is an optional permission — request it at the moment the user
+  // opts in (this click is the required user gesture). Without it the worker's
+  // chrome.debugger.attach would fail.
+  if (on) {
+    const granted = await chrome.permissions.request({ permissions: ['debugger'] });
+    if (!granted) {
+      box.checked = false;
+      $('sub').textContent = 'Deep capture needs the “debugger” permission — not granted.';
+      return;
+    }
   }
   const res = await toWorker(
     on ? { type: 'deep:enable', tabId: tab?.id } : { type: 'deep:disable', tabId: tab?.id },

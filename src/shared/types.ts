@@ -151,6 +151,17 @@ export const AiAnalysis = AiAnalysisResult.extend({
 });
 export type AiAnalysis = z.infer<typeof AiAnalysis>;
 
+// ─── CDP screencast (true-pixel video, deep-capture only) ─────────────────────
+// Unlike the DOM replay (a reconstruction), screencast frames are actual
+// rendered pixels from chrome.debugger's Page.startScreencast — so canvas/WebGL,
+// <video>, nested iframes, and cross-origin CSS all show faithfully. Each frame
+// is a JPEG data URL stamped on the relative capture timeline.
+export const ScreencastFrame = z.object({
+  t: z.number(), // ms since capture start
+  data: z.string(), // data:image/jpeg;base64,…
+});
+export type ScreencastFrame = z.infer<typeof ScreencastFrame>;
+
 // ─── The bundle ─────────────────────────────────────────────────────────────
 export const CaptureBundle = z.object({
   id: z.string(),
@@ -162,6 +173,8 @@ export const CaptureBundle = z.object({
   screenshotDataUrl: z.string().optional(),
   // Session-replay event stream (gap #1). Optional for back-compat.
   replay: z.array(ReplayEvent).optional(),
+  // True-pixel CDP screencast frames (deep-capture only). Optional.
+  screencast: z.array(ScreencastFrame).optional(),
   environment: Environment,
   redacted: z.boolean(),
   createdAt: z.number(),

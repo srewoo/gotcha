@@ -76,11 +76,14 @@ class Ring<T> {
 }
 
 export class BufferStore {
-  readonly console = new Ring<ConsoleEntry>(500, (e) => e.ts);
-  readonly network = new Ring<NetworkEntry>(300, (e) => e.ts);
-  readonly steps = new Ring<ReproStep>(200, (e) => e.ts);
+  // Sized for busy enterprise SPAs: a chatty page can emit hundreds of console
+  // lines / requests on load, and the entries the bug report exists to capture
+  // (the error, the failed request) must not be evicted before the user finishes.
+  readonly console = new Ring<ConsoleEntry>(2000, (e) => e.ts);
+  readonly network = new Ring<NetworkEntry>(1000, (e) => e.ts);
+  readonly steps = new Ring<ReproStep>(400, (e) => e.ts);
   // Replay events are higher-frequency (mutations/scroll), so a larger ring.
-  readonly replay = new Ring<ReplayEvent>(3000, (e) => e.t);
+  readonly replay = new Ring<ReplayEvent>(5000, (e) => e.t);
   recording = false;
   startedAt: number | null = null;
   // Wall-clock time the replay recorder's relative timeline (`event.t`) started.

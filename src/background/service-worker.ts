@@ -9,14 +9,16 @@ import { CaptureBundle } from '@shared/types';
 import { bundleDb } from '../content/db';
 import { redactBundle } from '@shared/redact';
 import { getIntegration } from '../integrations';
-import { enableDeep, disableDeep, isDeep, collectDeep, fullPageScreenshot } from './deep-capture';
-import { analyzeBundle, analyzeBundleStream, getAiConfig, chat } from '../ai/llm';
+import { enableDeep, disableDeep, isDeep, collectDeep, collectScreencast, fullPageScreenshot } from './deep-capture';
+import { analyzeBundle, analyzeBundleStream, getAiConfig, chat, generatePlaywrightTestWithAi } from '../ai/llm';
+import { generatePlaywrightTest } from '../testgen/playwright';
 import { findDuplicates } from '../ai/duplicates';
 import { setExtraRedactionPatterns } from '@shared/redact';
 import { absolutizeCss } from '@shared/css-util';
 
-// Cap on cross-origin CSS we inline per capture, mirroring the in-page budget.
-const MAX_XORIGIN_CSS = 1_500_000;
+// Cap on cross-origin CSS we inline per capture, mirroring the in-page budget
+// (MAX_INLINE_CSS in dom-recorder.ts — keep in sync).
+const MAX_XORIGIN_CSS = 3_000_000;
 const CSS_FETCH_TIMEOUT_MS = 4000;
 
 // Ephemeral by design — holds NO capture state (PRD §8). Every handler reads
@@ -157,6 +159,9 @@ async function handle(
     case 'ai:duplicates':
       return findDupes(message.id);
 
+    case 'ai:generateTest':
+      return generateAiTest(message.id);
+
     default:
       return { ok: false, error: `Unhandled message in worker: ${(message as { type: string }).type}` };
   }
@@ -192,12 +197,21 @@ async function saveBundle(
 
   // Merge any deep-capture (CDP) network entries — full bodies + pre-injection
   // requests the monkey-patch couldn't see. They supersede on duplicate URLs.
+  // Collect UNCONDITIONALLY (not gated on isDeep): entries are durably flushed
+  // to chrome.storage.session as they finish, but the in-memory `attached` flag
+  // is lost if the worker was evicted mid-session — gating on it would orphan
+  // already-captured entries. collectDeep returns [] cheaply when there's none.
   const tabId = sender.tab?.id;
-  if (tabId !== undefined && isDeep(tabId)) {
+  if (tabId !== undefined) {
     const deep = await collectDeep(tabId);
-    const seen = new Set(deep.map((d) => `${d.method} ${d.url} ${d.status}`));
-    const shallow = bundle.network.filter((n) => !seen.has(`${n.method} ${n.url} ${n.status}`));
-    bundle.network = [...deep, ...shallow].sort((a, b) => a.ts - b.ts);
+    if (deep.length > 0) {
+      const seen = new Set(deep.map((d) => `${d.method} ${d.url} ${d.status}`));
+      const shallow = bundle.network.filter((n) => !seen.has(`${n.method} ${n.url} ${n.status}`));
+      bundle.network = [...deep, ...shallow].sort((a, b) => a.ts - b.ts);
+    }
+    // True-pixel CDP screencast frames captured during the repro (deep mode).
+    const frames = collectScreencast(tabId);
+    if (frames.length > 0) bundle.screencast = frames;
   }
 
   // Attach the screenshot now — only the worker can call captureVisibleTab,
@@ -267,6 +281,34 @@ async function findDupes(id: string): Promise<RuntimeResponse> {
   return { ok: true, duplicates };
 }
 
+// LLM-authored Playwright test (#3 moat). Same redact-before-send guarantee as
+// triage: we ALWAYS redact before the bundle reaches the model. Returns ok:false
+// (no key) or throws (LLM/parse error → router converts to ok:false) so the
+// review page falls back to the deterministic generator. The deterministic
+// generatePlaywrightTest is imported so the worker can also serve as the
+// fallback's single source of truth if a caller prefers a guaranteed result.
+async function generateAiTest(id: string): Promise<RuntimeResponse> {
+  const cfg = await getAiConfig();
+  const stored = await bundleDb.get(id);
+  if (!stored) return { ok: false, error: 'Bundle not found' };
+  let source: string;
+  if (cfg) {
+    await primeRedaction();
+    try {
+      source = await generatePlaywrightTestWithAi(redactBundle(stored), cfg);
+    } catch {
+      // LLM error / non-test output → deterministic fallback, still useful.
+      source = generatePlaywrightTest(stored, stored.aiAnalysis?.testHints).source;
+    }
+  } else {
+    source = generatePlaywrightTest(stored, stored.aiAnalysis?.testHints).source;
+  }
+  const test = { filename: `gotcha-${stored.id.slice(0, 6)}.spec.ts`, source };
+  stored.generatedTest = test;
+  await bundleDb.put(stored);
+  return { ok: true, test };
+}
+
 // Validate an integration's stored credentials (feature: per-integration test).
 async function testIntegration(id: IntegrationId): Promise<RuntimeResponse> {
   try {
@@ -305,6 +347,9 @@ chrome.runtime.onConnect.addListener((port) => {
       if (!cfg) throw new Error('No AI key configured — add one in Settings.');
       const stored = await bundleDb.get(id);
       if (!stored) throw new Error('Bundle not found');
+      // Prime user-defined redaction patterns (F7) before the bundle leaves the
+      // browser — parity with analyzeWithAi/findDupes (was missing here).
+      await primeRedaction();
       const analysis = await analyzeBundleStream(redactBundle(stored), cfg, (delta) =>
         port.postMessage({ type: 'delta', delta }),
       );

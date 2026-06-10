@@ -158,9 +158,18 @@ export class Annotator {
     const tmp = document.createElement('canvas');
     const tctx = tmp.getContext('2d');
     if (!tctx) return;
-    const factor = Math.max(1, Math.floor(Math.min(w, h) / 8));
-    tmp.width = Math.max(1, Math.floor(w / factor));
-    tmp.height = Math.max(1, Math.floor(h / factor));
+    // Reduce the region to at most MAX_CELLS averaged blocks across its shorter
+    // side, with each block ≥ MIN_BLOCK source px. WHY: the old factor floored to
+    // 1 for regions under 8px, so a small redaction (e.g. a one-line value) got
+    // NO pixelation and stayed readable — defeating the tool. Tiny regions now
+    // collapse to a single solid block; large ones still pixelate to ~8 blocks.
+    const MIN_BLOCK = 6;
+    const MAX_CELLS = 8;
+    const shortSide = Math.min(w, h);
+    const cells = Math.max(1, Math.min(MAX_CELLS, Math.floor(shortSide / MIN_BLOCK)));
+    const scale = cells / shortSide;
+    tmp.width = Math.max(1, Math.round(w * scale));
+    tmp.height = Math.max(1, Math.round(h * scale));
     tctx.drawImage(this.canvas, x, y, w, h, 0, 0, tmp.width, tmp.height);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, x, y, w, h);

@@ -7,7 +7,7 @@ import { defineManifest } from '@crxjs/vite-plugin';
 export default defineManifest({
   manifest_version: 3,
   name: 'Gotcha',
-  version: '1.0',
+  version: '1.1',
   description: 'One-click bug report that ships with a runnable regression test.',
   action: {
     default_popup: 'src/popup/popup.html',
@@ -55,9 +55,13 @@ export default defineManifest({
       all_frames: true,
     },
   ],
+  permissions: ['activeTab', 'scripting', 'storage', 'tabs'],
   // 'debugger' powers opt-in deep-capture mode (full response bodies +
-  // pre-injection requests). It is only attached when the user enables it.
-  permissions: ['activeTab', 'scripting', 'storage', 'tabs', 'debugger'],
+  // pre-injection requests + CDP screencast). It's an OPTIONAL permission,
+  // requested at runtime only when the user turns on Deep capture — so the
+  // install-time prompt (and Web Store review) doesn't carry the alarming
+  // "debug your browser" grant for users who never enable it.
+  optional_permissions: ['debugger'],
   // <all_urls> already covers integration endpoints (Linear/Jira/GitHub/Slack
   // webhooks) for the worker's fetch calls.
   host_permissions: ['<all_urls>'],

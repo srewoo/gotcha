@@ -22,5 +22,5 @@ export type CaptureSettingKey = (typeof CAPTURE_SETTING_KEYS)[number];
 // local IndexedDB, so the list is capped: at MAX_REPORTS the oldest is
 // auto-evicted on save; at WARN_REPORTS the UI nudges the user to clear space
 // before that happens (loading many reports also costs memory/time).
-export const MAX_REPORTS = 50;
-export const WARN_REPORTS = 40;
+export const MAX_REPORTS = 100;
+export const WARN_REPORTS = 80;

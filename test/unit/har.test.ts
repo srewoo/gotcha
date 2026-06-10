@@ -30,4 +30,37 @@ describe('buildHar', () => {
     const out = buildHar(bundle(net), { redact: true });
     expect(out.json).not.toContain('zzz');
   });
+
+  it('maps request body, headers, query string and sorts entries by ts', () => {
+    const out = buildHar(
+      bundle([
+        {
+          id: 'n2', url: 'https://api/x?a=1&b=2', method: 'POST', status: 200, statusText: 'OK',
+          durationMs: 5, failed: false, ts: 1700000000005,
+          requestHeaders: { 'x-test': '1' }, responseHeaders: { 'content-type': 'application/json' },
+          requestBody: '{"q":1}', responseBody: '{"r":2}',
+        },
+        {
+          id: 'n1', url: 'https://api/y', method: 'GET', status: 304, durationMs: 1, failed: false, ts: 1700000000001,
+        },
+      ]),
+      { redact: false },
+    );
+    const har = JSON.parse(out.json);
+    // sorted ascending by ts → n1 (GET /y) first
+    expect(har.log.entries[0].request.url).toBe('https://api/y');
+    const post = har.log.entries[1];
+    expect(post.request.postData.text).toBe('{"q":1}');
+    expect(post.request.queryString).toEqual([
+      { name: 'a', value: '1' },
+      { name: 'b', value: '2' },
+    ]);
+    expect(post.request.headers).toContainEqual({ name: 'x-test', value: '1' });
+    expect(post.response.content.mimeType).toBe('application/json');
+  });
+
+  it('handles an empty network log', () => {
+    const har = JSON.parse(buildHar(bundle([]), { redact: false }).json);
+    expect(har.log.entries).toEqual([]);
+  });
 });

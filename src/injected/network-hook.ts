@@ -4,11 +4,11 @@ import type { NetworkEntry } from '@shared/types';
 
 // Cap captured bodies so a multi-MB response can't bloat the buffer or freeze
 // serialization. Deep mode (chrome.debugger, v1.5) lifts this.
-const MAX_BODY = 16_384;
+const MAX_BODY = 65_536;
 // If a response declares more than this many bytes, we DON'T read it into
-// memory at all (reading a 100 MB download just to clip to 16 KB is wasteful
+// memory at all (reading a 100 MB download just to clip to 64 KB is wasteful
 // and can OOM the tab). We record a placeholder instead. (Issue #2)
-const MAX_READ_BYTES = 512_000;
+const MAX_READ_BYTES = 1_000_000;
 
 function clip(text: string): string {
   return text.length > MAX_BODY ? `${text.slice(0, MAX_BODY)}… [${text.length} bytes total]` : text;

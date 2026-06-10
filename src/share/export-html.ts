@@ -168,6 +168,10 @@ function buildReplaySection(events: ReplayEvent[]): string {
       ${esc(String(events.length))} captured events. Full interactive replay is
       available inside the Gotcha extension.
     </p>
+    <p class="replay-note replay-note-fidelity">
+      Reconstructed from the captured DOM — not a pixel video. Canvas/WebGL,
+      &lt;video&gt;, nested iframes, and CORS-restricted CSS may not render.
+    </p>
     <div class="replay-container">
       <iframe
         id="replay-frame"
