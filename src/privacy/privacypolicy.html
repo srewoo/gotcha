@@ -67,7 +67,10 @@
           Gotcha requests <span class="mono">scripting</span>,
           <span class="mono">storage</span>, <span class="mono">tabs</span>, and (opt-in)
           <span class="mono">debugger</span>, plus host access so it can capture on whatever page
-          you are debugging and file the report to your tracker. Each is used solely for the
+          you are debugging and file the report to your tracker. <span class="mono">scripting</span>
+          is used only to attach Gotcha's own capture scripts to a tab that was open before the
+          extension was installed or updated (so your first capture works without a manual reload);
+          it never reads or modifies the page's own scripts. Each permission is used solely for the
           capture-and-file workflow described above.
         </p>
       </section>
