@@ -60,19 +60,52 @@ body { overflow-x: hidden; } /* nothing should ever scroll the page sideways */
 .redact { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ok); margin-top: 11px; }
 .redact-toggle { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink2); }
 .shot {
+  position: relative;
   border: 1px solid var(--line2); border-radius: 6px; min-height: 140px;
   background: var(--paper2); overflow: hidden; display: grid; place-items: center;
 }
 .shot img { width: 100%; display: block; }
 .shot .ph { color: var(--faint); font-size: 12px; }
 .anno-canvas { display: block; max-width: 100%; cursor: crosshair; touch-action: none; }
-#shot-tools { display: inline-flex; gap: 2px; }
+#shot-tools { display: inline-flex; gap: 2px; align-items: center; }
+.anno-sep { width: 1px; height: 16px; background: var(--line2); margin: 0 4px; }
 .anno-tool {
   border: 1px solid var(--line2); background: var(--card); border-radius: 5px;
   width: 24px; height: 22px; font-size: 12px; cursor: pointer; padding: 0; line-height: 1;
 }
 .anno-tool:hover { border-color: var(--ink); }
 .anno-tool.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+/* Floating comment editor for a pin (positioned over the canvas). */
+.anno-comment-input {
+  z-index: 5; padding: 5px 8px; font-size: 12px; font-family: inherit;
+  border: 1px solid var(--ink); border-radius: 6px; background: var(--card);
+  color: var(--ink); min-width: 160px; box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+}
+
+/* Numbered comment summary beneath the screenshot. */
+.shot-comments {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  font-size: 12px; color: var(--ink2); line-height: 1.7;
+}
+.shot-comments li { padding: 3px 0; border-top: 1px solid var(--line); }
+.shot-comments li:first-child { border-top: none; }
+
+/* Minimized: collapse the screenshot body to just its toolbar. */
+.shot--min { min-height: 0; }
+.shot--min .anno-canvas, .shot--min .ph { display: none; }
+
+/* Full screen: overlay the whole viewport, center the (scrollable) canvas. */
+.shot--max {
+  position: fixed; inset: 0; z-index: 1000; border-radius: 0;
+  background: rgba(18,16,14,0.92); display: grid; place-items: center;
+  overflow: auto; padding: 24px;
+}
+.shot--max .anno-canvas {
+  max-width: 96vw; max-height: 90vh; width: auto !important; height: auto;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+body.shot-maxed { overflow: hidden; }
 .testgen {
   border: 1px dashed var(--red); border-radius: 8px; padding: 15px;
   margin-top: 16px; background: var(--red-soft);

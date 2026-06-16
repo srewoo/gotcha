@@ -1,6 +1,7 @@
 import { BRIDGE_MARKER, post } from './bridge';
 import { uid } from '@shared/uid';
 import type { NetworkEntry } from '@shared/types';
+import { serializeBody } from './body-serializer';
 
 // Matches the cap used in network-hook.ts — keep in sync.
 const MAX_BODY = 16_384;
@@ -15,25 +16,11 @@ function emit(entry: NetworkEntry): void {
 
 // Best-effort serialisation of the sendBeacon body data, which can be any
 // BodyInit type (string, Blob, ArrayBuffer, FormData, URLSearchParams).
+// Delegates to the shared serializer (same one fetch/XHR use); only the
+// clipping budget lives here.
 function serializeBeaconData(data?: BodyInit | null): string | undefined {
-  if (data == null) return undefined;
-  try {
-    if (typeof data === 'string') return clip(data);
-    if (data instanceof URLSearchParams) return clip(data.toString());
-    if (data instanceof FormData) {
-      const parts: string[] = [];
-      data.forEach((value, key) => {
-        parts.push(`${key}=${typeof value === 'string' ? value : '[File]'}`);
-      });
-      return clip(parts.join('&'));
-    }
-    // Blob and ArrayBuffer: show type/size only — can't synchronously decode.
-    if (data instanceof Blob) return `[Blob type=${data.type} size=${data.size}]`;
-    if (data instanceof ArrayBuffer) return `[ArrayBuffer byteLength=${data.byteLength}]`;
-    return clip(String(data));
-  } catch {
-    return undefined;
-  }
+  const serialized = serializeBody(data);
+  return serialized === undefined ? undefined : clip(serialized);
 }
 
 // Guard: avoid double-patching if the page re-evaluates the injected script.

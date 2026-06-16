@@ -10,10 +10,17 @@ import type { CaptureStatus } from '@shared/messaging';
 //    `maxAgeMs` relative to the newest item, so the buffer is a rolling window
 //    ("snapshots deleted every 2 minutes"). The replay ring additionally keeps
 //    the newest seed frame before the cutoff so a slice is always renderable.
+// Age eviction runs at most once per second of timeline advance: a full pass
+// per push is O(n²) over an always-on session on the page's main thread, and
+// the rolling window only needs coarse precision.
+const EVICT_INTERVAL_MS = 1000;
+
 class Ring<T> {
   private items: T[] = [];
   private maxAgeMs: number | null = null;
   private keepAnchor: ((item: T) => boolean) | null = null;
+  // Newest-item timestamp at the last age-eviction pass (amortization).
+  private lastEvictTs: number | null = null;
   // An optional permanently-retained head item (e.g. the replay's initial styled
   // snapshot), kept out of the rolling `items` so it is never evicted by count
   // or age. Surfaced at the front of all().
@@ -29,6 +36,7 @@ class Ring<T> {
   configureAge(maxAgeMs: number | null, keepAnchor?: (item: T) => boolean): void {
     this.maxAgeMs = maxAgeMs;
     this.keepAnchor = keepAnchor ?? null;
+    this.lastEvictTs = null; // re-arm so the new window applies on the next push
   }
 
   push(item: T): void {
@@ -40,22 +48,40 @@ class Ring<T> {
   private evictByAge(): void {
     if (this.maxAgeMs == null || !this.tsOf || this.items.length === 0) return;
     const tsOf = this.tsOf;
-    const cutoff = tsOf(this.items[this.items.length - 1]!) - this.maxAgeMs;
+    const newest = tsOf(this.items[this.items.length - 1]!);
+    // Amortize: skip the pass until the timeline has advanced ≥1s since the
+    // last one — expired items may linger up to EVICT_INTERVAL_MS, which is
+    // immaterial for a multi-second rolling window.
+    if (this.lastEvictTs != null && newest - this.lastEvictTs < EVICT_INTERVAL_MS) return;
+    this.lastEvictTs = newest;
+    const cutoff = newest - this.maxAgeMs;
+
+    // Items arrive in time order, so binary-search the first surviving index
+    // and drop everything before it in a single splice (no full double-scan).
+    let lo = 0;
+    let hi = this.items.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (tsOf(this.items[mid]!) >= cutoff) hi = mid;
+      else lo = mid + 1;
+    }
+    if (lo === 0) return; // nothing expired
 
     // The newest pre-cutoff item matching keepAnchor (e.g. a snapshot) is the
     // seed for a renderable slice — retain it even though it's "expired".
     let anchor: T | null = null;
     if (this.keepAnchor) {
-      for (const it of this.items) {
-        if (tsOf(it) >= cutoff) break;
-        if (this.keepAnchor(it)) anchor = it;
+      for (let i = lo - 1; i >= 0; i--) {
+        const it = this.items[i]!;
+        if (this.keepAnchor(it)) {
+          anchor = it;
+          break;
+        }
       }
     }
 
-    const kept: T[] = [];
-    if (anchor) kept.push(anchor);
-    for (const it of this.items) if (tsOf(it) >= cutoff) kept.push(it);
-    this.items = kept;
+    this.items.splice(0, lo);
+    if (anchor) this.items.unshift(anchor);
   }
 
   // Permanently retain `item` as the head, never evicted. Held separately from
@@ -72,6 +98,7 @@ class Ring<T> {
   clear(): void {
     this.items = [];
     this.pinned = null;
+    this.lastEvictTs = null;
   }
 }
 

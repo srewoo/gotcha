@@ -267,6 +267,22 @@ describe('BufferStore — age-based retention', () => {
   });
 });
 
+// ─── Age-eviction amortization ────────────────────────────────────────────────
+
+describe('BufferStore — age-eviction amortization', () => {
+  it('should skip the eviction pass when the timeline advanced less than 1s since the last one', () => {
+    const store = new BufferStore();
+    // Tiny window so a skipped pass is observable: 'a' is expired by 'b' but
+    // lingers because 'b' arrives <1s after the previous pass.
+    store.console.configureAge(100);
+    store.console.push(consoleAt('a', 0)); // first push → pass runs
+    store.console.push(consoleAt('b', 900)); // +900ms → pass skipped, 'a' lingers
+    expect(store.console.all().map((c) => c.id)).toEqual(['a', 'b']);
+    store.console.push(consoleAt('c', 1100)); // ≥1s advance → pass runs, cutoff = 1000
+    expect(store.console.all().map((c) => c.id)).toEqual(['c']);
+  });
+});
+
 // ─── sliceWindow ────────────────────────────────────────────────────────────
 
 describe('BufferStore — sliceWindow', () => {

@@ -404,6 +404,92 @@ describe('redactBundle — URL and DOM snapshot masking', () => {
   });
 });
 
+// ─── Title + environment URL masking (always-redact guarantee) ────────────────
+
+describe('redactBundle — title and environment.url masking', () => {
+  it('should mask PII in the bundle title', () => {
+    const bundle = makeBundle({ title: 'Login failed for jane@acme.com' });
+    const result = redactBundle(bundle);
+    expect(result.title).not.toContain('jane@acme.com');
+    expect(result.title).toContain(REDACTED);
+  });
+
+  it('should mask secret query params in the captured environment URL', () => {
+    const bundle = makeBundle({
+      environment: {
+        url: 'https://app.example.com/cb?code=oauth-abc123&state=xyz789&page=2',
+        userAgent: 'Mozilla/5.0',
+        browser: 'Chrome',
+        os: 'macOS',
+        viewport: { width: 1280, height: 720 },
+        dpr: 1,
+        locale: 'en-US',
+        capturedAt: 1700000000000,
+      },
+    });
+    const result = redactBundle(bundle);
+    expect(result.environment.url).not.toContain('oauth-abc123');
+    expect(result.environment.url).not.toContain('xyz789');
+    expect(result.environment.url).toContain('page=2');
+  });
+});
+
+// ─── Body masking — quoted values with whitespace ─────────────────────────────
+
+describe('redactBundle — whitespace-containing quoted secret values', () => {
+  function bodyBundle(requestBody: string) {
+    return makeBundle({
+      network: [
+        {
+          id: 'n1',
+          url: 'https://api.example.com/login',
+          method: 'POST',
+          status: 200,
+          requestBody,
+          durationMs: 10,
+          failed: false,
+          ts: 1700000000000,
+        },
+      ],
+    });
+  }
+
+  it('should mask a quoted password containing spaces', () => {
+    const result = redactBundle(bodyBundle('{"password":"hunter two","note":"keep me"}'));
+    expect(result.network[0]!.requestBody).not.toContain('hunter two');
+    expect(result.network[0]!.requestBody).toContain(`"password":"${REDACTED}"`);
+    // Non-secret quoted values with spaces are preserved.
+    expect(result.network[0]!.requestBody).toContain('keep me');
+  });
+
+  it('should mask a quoted secret containing escaped quotes', () => {
+    const result = redactBundle(bodyBundle('{"token":"abc \\" def","other":"x"}'));
+    expect(result.network[0]!.requestBody).not.toContain('abc \\" def');
+    expect(result.network[0]!.requestBody).toContain(REDACTED);
+    expect(result.network[0]!.requestBody).toContain('"other":"x"');
+  });
+
+  it('should keep masking form-encoded key=value secrets', () => {
+    const result = redactBundle(bodyBundle('password=hunter2&user=bob'));
+    expect(result.network[0]!.requestBody).not.toContain('hunter2');
+    expect(result.network[0]!.requestBody).toContain('user=bob');
+  });
+});
+
+// ─── SSN masking ──────────────────────────────────────────────────────────────
+
+describe('maskString — US SSN pattern', () => {
+  it('should mask a US SSN', () => {
+    const result = maskString('SSN on file: 123-45-6789.');
+    expect(result).not.toContain('123-45-6789');
+    expect(result).toContain(REDACTED);
+  });
+
+  it('should not mask phone-formatted numbers when they do not match the SSN shape', () => {
+    expect(maskString('Call 123-456-7890 x99')).toBe('Call 123-456-7890 x99');
+  });
+});
+
 // ─── Custom redaction patterns (feature F7) ───────────────────────────────────
 
 import { setExtraRedactionPatterns } from '../../src/shared/redact';

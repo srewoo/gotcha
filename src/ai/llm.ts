@@ -123,10 +123,12 @@ function buildRequest(
         body: { model: cfg.model, max_tokens: MAX_OUTPUT_TOKENS, stream, system, messages: [{ role: 'user', content: user }] },
       };
     case 'gemini': {
-      const method = stream ? 'streamGenerateContent?alt=sse&' : 'generateContent?';
+      const method = stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
       return {
-        url: `https://generativelanguage.googleapis.com/v1beta/models/${cfg.model}:${method}key=${cfg.apiKey}`,
-        headers: { 'Content-Type': 'application/json' },
+        // The key goes in the x-goog-api-key header, NOT a ?key= query param —
+        // URLs end up in logs, HARs, and proxies; headers don't.
+        url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:${method}`,
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.apiKey },
         body: {
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: 'user', parts: [{ text: user }] }],

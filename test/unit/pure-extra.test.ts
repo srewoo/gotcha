@@ -3,10 +3,8 @@ import { absolutizeCss } from '../../src/shared/css-util';
 import {
   isBridgeMessage,
   isControlMessage,
-  isFrameForward,
   BRIDGE_MARKER,
   CONTROL_MARKER,
-  FRAME_FWD_MARKER,
 } from '../../src/shared/messaging';
 
 describe('shared/css-util — absolutizeCss', () => {
@@ -48,11 +46,5 @@ describe('shared/messaging — type guards', () => {
     expect(isControlMessage({ marker: CONTROL_MARKER, action: 'replay-on' })).toBe(true);
     expect(isControlMessage({ marker: BRIDGE_MARKER })).toBe(false);
     expect(isControlMessage(undefined)).toBe(false);
-  });
-
-  it('isFrameForward matches the frame-forward marker', () => {
-    expect(isFrameForward({ marker: FRAME_FWD_MARKER, payload: {} })).toBe(true);
-    expect(isFrameForward({ marker: CONTROL_MARKER })).toBe(false);
-    expect(isFrameForward(42)).toBe(false);
   });
 });

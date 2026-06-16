@@ -43,7 +43,7 @@ describe('console-hook — serializeArg', () => {
 });
 
 describe('console-hook — installConsoleHook', () => {
-  it('forwards console.* calls to the bridge while preserving the original', () => {
+  it('should forward each console call to the bridge exactly once when install runs twice', () => {
     const posted: Array<{ marker?: string; type?: string; entry?: any }> = [];
     const spy = vi.spyOn(window, 'postMessage').mockImplementation((m: unknown) => {
       posted.push(m as { marker?: string });
@@ -51,14 +51,17 @@ describe('console-hook — installConsoleHook', () => {
     const origError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     installConsoleHook();
+    // Double-eval guard: a second install must be a no-op — without it the
+    // wrappers stack and every log is forwarded twice.
+    installConsoleHook();
     // eslint-disable-next-line no-console
     console.error('rendered', { a: 1 });
 
     const bridged = posted.filter((m) => m.marker === BRIDGE_MARKER && m.type === 'console');
-    expect(bridged.length).toBeGreaterThanOrEqual(1);
-    expect(bridged[bridged.length - 1]!.entry.level).toBe('error');
-    expect(bridged[bridged.length - 1]!.entry.message).toContain('rendered');
-    expect(origError).toHaveBeenCalled(); // original console still invoked
+    expect(bridged.length).toBe(1);
+    expect(bridged[0]!.entry.level).toBe('error');
+    expect(bridged[0]!.entry.message).toContain('rendered');
+    expect(origError).toHaveBeenCalledTimes(1); // original console still invoked, once
 
     spy.mockRestore();
     origError.mockRestore();

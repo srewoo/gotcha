@@ -1,6 +1,12 @@
 import type { CaptureBundle } from '@shared/types';
 import { describeBundle } from './format';
-import { simulatedRef, type FileResult, type Integration, type TestResult } from './types';
+import {
+  simulatedRef,
+  type FileResult,
+  type Integration,
+  type TestResult,
+  type TriageFields,
+} from './types';
 
 // Linear is the MVP integration (PRD §6). Files via GraphQL when an API key +
 // team id are configured in chrome.storage.local; simulates otherwise.
@@ -17,7 +23,7 @@ async function config(): Promise<{ apiKey?: string; teamId?: string }> {
 export const linear: Integration = {
   id: 'linear',
   name: 'Linear',
-  async file(bundle: CaptureBundle): Promise<FileResult> {
+  async file(bundle: CaptureBundle, fields?: TriageFields): Promise<FileResult> {
     const { apiKey, teamId } = await config();
     if (!apiKey || !teamId) return simulatedRef('linear');
 
@@ -30,7 +36,11 @@ export const linear: Integration = {
       headers: { 'Content-Type': 'application/json', Authorization: apiKey },
       body: JSON.stringify({
         query,
-        variables: { input: { teamId, title: bundle.title, description: describeBundle(bundle) } },
+        // Triage rides in the description body (see format.ts for why we never
+        // map it to Linear-native team/assignee/priority ids here).
+        variables: {
+          input: { teamId, title: bundle.title, description: describeBundle(bundle, { fields }) },
+        },
       }),
     });
     if (!res.ok) throw new Error(`Linear API ${res.status}`);

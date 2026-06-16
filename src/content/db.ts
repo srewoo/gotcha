@@ -45,9 +45,22 @@ export function buildSummary(b: CaptureBundle): BundleSummary {
   };
 }
 
+// One shared connection per factory: opening per-operation never closed the
+// previous connection (a slow leak) and re-ran version negotiation on every
+// call. Keyed by the live `indexedDB` global so tests that swap in a fresh
+// fake-indexeddb factory per test never reuse a connection from the old one.
+let cached: { factory: IDBFactory; promise: Promise<IDBDatabase> } | null = null;
+
 function open(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, VERSION);
+  const factory = indexedDB;
+  if (cached && cached.factory === factory) return cached.promise;
+  const promise = new Promise<IDBDatabase>((resolve, reject) => {
+    // Drop only OUR cache entry — a stale connection's late close event must
+    // not evict a newer entry created for a different factory.
+    const invalidate = (): void => {
+      if (cached?.promise === promise) cached = null;
+    };
+    const req = factory.open(DB_NAME, VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
@@ -69,9 +82,30 @@ function open(): Promise<IDBDatabase> {
         }
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'));
+    // Another context holds an old-version connection and won't close: reject
+    // rather than hang forever (a latent deadlock on future VERSION bumps).
+    req.onblocked = () => {
+      invalidate();
+      reject(new Error('IndexedDB open blocked by another open connection'));
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      // The connection can die underneath us (browser storage cleanup, or a
+      // newer-version open elsewhere) — invalidate so the next op reopens.
+      db.onclose = () => invalidate();
+      db.onversionchange = () => {
+        db.close();
+        invalidate();
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      invalidate();
+      reject(req.error ?? new Error('IndexedDB open failed'));
+    };
   });
+  cached = { factory, promise };
+  return promise;
 }
 
 // Read a whole store via getAll.

@@ -18,6 +18,8 @@ beforeAll(async () => {
   vi.spyOn(window, 'postMessage').mockImplementation((msg: unknown) => {
     posted.push(msg as { marker?: string });
   });
+  const { installShadowRegistry } = await import('../../src/injected/shadow-registry');
+  installShadowRegistry(); // so attachShadow roots are tracked for observation
   const { installDomRecorder } = await import('../../src/injected/dom-recorder');
   installDomRecorder();
 });
@@ -102,6 +104,39 @@ describe('dom-recorder — recording session', () => {
     control('replay-always-on');
     await sleep(5);
     expect(replayEvents().some((e) => e.kind === 'snapshot')).toBe(true);
+  });
+
+  it('captures mutations INSIDE a shadow root attached before recording', async () => {
+    const host = document.createElement('pre-existing-widget');
+    document.body.appendChild(host);
+    const sr = host.attachShadow({ mode: 'open' });
+    sr.innerHTML = '<p>initial</p>';
+
+    control('replay-on');
+    await sleep(5);
+    posted = [];
+
+    // Mutate inside the shadow root — a document-level observer would miss this.
+    sr.querySelector('p')!.textContent = 'shadow-changed';
+    await sleep(320); // > MUTATION_THROTTLE_MS
+    const frame = replayEvents().find((e) => e.kind === 'mutation');
+    expect(frame).toBeDefined();
+    expect(frame.html).toContain('shadow-changed');
+  });
+
+  it('captures mutations inside a shadow root attached AFTER recording starts', async () => {
+    control('replay-on');
+    await sleep(5);
+    posted = [];
+
+    const host = document.createElement('lazy-widget');
+    document.body.appendChild(host);
+    const sr = host.attachShadow({ mode: 'open' }); // onShadowRoot → observed live
+    sr.innerHTML = '<span>lazy</span>';
+    await sleep(320);
+    sr.querySelector('span')!.textContent = 'lazy-updated';
+    await sleep(320);
+    expect(replayEvents().some((e) => e.kind === 'mutation' && e.html?.includes('lazy-updated'))).toBe(true);
   });
 
   it('inlines readable same-origin CSS into the full snapshot', async () => {

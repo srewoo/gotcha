@@ -40,7 +40,14 @@ function selectorsFor(el: Element): Pick<ReproStep, 'selector' | 'selectorCandid
   };
 }
 
+// Guard against double-install (script may be re-evaluated by the page) —
+// duplicate listeners would emit every step twice and re-wrap the History API.
+let installed = false;
+
 export function installReproRecorder(): void {
+  if (installed) return;
+  installed = true;
+
   // First step is always the entry navigation.
   emit('navigate', location.pathname + location.search);
 

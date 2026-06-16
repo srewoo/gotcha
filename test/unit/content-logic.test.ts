@@ -48,8 +48,20 @@ describe('content/environment — captureEnvironment', () => {
   });
 
   it('parses browser + OS across the UA matrix', () => {
+    // Real full UA strings: Chromium-based Edge/Opera also carry a "Chrome/…"
+    // token (and every Chromium UA carries "Safari/…"), which is exactly what
+    // a leftmost-alternation parser misreports — keep these realistic.
     const cases: Array<[string, string, string]> = [
-      ['Mozilla/5.0 (Windows NT 10.0) Edg/121.0', 'Edge 121', 'Windows 10/11'],
+      [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.2277.83',
+        'Edge 121',
+        'Windows 10/11',
+      ],
+      [
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 OPR/105.0.0.0',
+        'Opera 105',
+        'macOS 10.15.7',
+      ],
       ['Mozilla/5.0 (X11; Linux x86_64) Firefox/118.0', 'Firefox 118', 'Linux'],
       ['Mozilla/5.0 (Linux; Android 13) Chrome/119.0.0.0', 'Chrome 119', 'Android'],
       ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Safari/604.1', 'Safari 604', 'iOS'],
@@ -62,6 +74,21 @@ describe('content/environment — captureEnvironment', () => {
       expect(env.os).toBe(os);
       vi.restoreAllMocks();
     }
+  });
+
+  it('should prefer the Edge/Opera brand token over Chrome when both are present', () => {
+    // Regression for the alternation bug: leftmost "Chrome/…" must not win.
+    const edge =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.2210.91';
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(edge);
+    expect(captureEnvironment().browser).toBe('Edge 120');
+    vi.restoreAllMocks();
+
+    const opera =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/106.0.0.0';
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(opera);
+    expect(captureEnvironment().browser).toBe('Opera 106');
+    vi.restoreAllMocks();
   });
 });
 

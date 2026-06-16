@@ -83,16 +83,17 @@ export function installWebSocketHook(): void {
         }
       });
 
-      // --- onmessage: collect recv frames (capped) ---
+      // --- onmessage: collect recv frames (capped, sliding window) ---
+      // At cap, drop the OLDEST frame: the most recent traffic is what sits
+      // nearest the bug, so freezing the buffer at the first N would lose it.
       this.addEventListener('message', (event: MessageEvent) => {
         try {
-          if (this.__gotchaFrames.length < MAX_FRAMES) {
-            this.__gotchaFrames.push({
-              dir: 'recv',
-              data: serializeWsData(event.data),
-              ts: Date.now(),
-            });
-          }
+          if (this.__gotchaFrames.length >= MAX_FRAMES) this.__gotchaFrames.shift();
+          this.__gotchaFrames.push({
+            dir: 'recv',
+            data: serializeWsData(event.data),
+            ts: Date.now(),
+          });
         } catch {
           // never throw
         }
@@ -153,15 +154,15 @@ export function installWebSocketHook(): void {
     }
 
     // Override send() to collect outgoing frames before they leave.
+    // Same sliding window as recv: keep the newest frames, not the first N.
     override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
       try {
-        if (this.__gotchaFrames.length < MAX_FRAMES) {
-          this.__gotchaFrames.push({
-            dir: 'send',
-            data: serializeWsData(data),
-            ts: Date.now(),
-          });
-        }
+        if (this.__gotchaFrames.length >= MAX_FRAMES) this.__gotchaFrames.shift();
+        this.__gotchaFrames.push({
+          dir: 'send',
+          data: serializeWsData(data),
+          ts: Date.now(),
+        });
       } catch {
         // never throw
       }

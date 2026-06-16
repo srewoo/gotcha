@@ -31,8 +31,9 @@ export function installEventSourceHook(): void {
   //      (readyState transitions to OPEN). Frames array is empty.
   //   2. "close/error" entry — emitted when the connection ends (error event),
   //      carrying all accumulated recv frames. EventSource automatically
-  //      reconnects on transient errors; we emit on each error event so the
-  //      reviewer can see reconnection cycles.
+  //      reconnects on transient errors; we re-emit on each error event, and
+  //      since the packager dedupes by id keeping the last, the stored entry
+  //      reflects the LATEST connection state (not each reconnection cycle).
   //
   // Note: EventSource has no explicit "close" method that fires an event —
   // calling es.close() is silent. We therefore only have the error event to
@@ -42,6 +43,9 @@ export function installEventSourceHook(): void {
     private readonly __gotchaId: string = uid();
     private readonly __gotchaFrames: SocketFrame[] = [];
     private readonly __gotchaTs: number = Date.now();
+    // Custom event types we've already attached a recorder listener for, so a
+    // page registering several listeners for one type records each event once.
+    private readonly __gotchaHooked = new Set<string>();
 
     constructor(url: string | URL, init?: EventSourceInit) {
       super(url, init);
@@ -72,22 +76,13 @@ export function installEventSourceHook(): void {
 
       // --- onmessage: collect recv frames (unnamed "message" events) ---
       this.addEventListener('message', (event: MessageEvent) => {
-        try {
-          if (this.__gotchaFrames.length < MAX_FRAMES) {
-            this.__gotchaFrames.push({
-              dir: 'recv',
-              data: clip(typeof event.data === 'string' ? event.data : String(event.data)),
-              ts: Date.now(),
-            });
-          }
-        } catch {
-          // never throw
-        }
+        this.__gotchaRecord(event.data);
       });
 
       // --- onerror: emit summary with frames collected so far ---
       // EventSource fires "error" both on reconnect cycles and on permanent
-      // close. We emit every time so the reviewer sees the state transitions.
+      // close. We emit every time; the packager dedupes by id keeping the
+      // last, so the stored entry reflects the latest connection state.
       this.addEventListener('error', () => {
         try {
           const closed = this.readyState === NativeEventSource.CLOSED;
@@ -110,6 +105,63 @@ export function installEventSourceHook(): void {
           // never throw
         }
       });
+    }
+
+    // Record one recv frame (capped, sliding window). At cap, drop the OLDEST
+    // frame: the most recent events sit nearest the bug, so freezing the
+    // buffer at the first N would lose them. Named events carry their type as
+    // a "<type>: " prefix since SocketFrame has no dedicated field for it.
+    private __gotchaRecord(data: unknown, type?: string): void {
+      try {
+        const text = clip(typeof data === 'string' ? data : String(data));
+        if (this.__gotchaFrames.length >= MAX_FRAMES) this.__gotchaFrames.shift();
+        this.__gotchaFrames.push({
+          dir: 'recv',
+          data: type ? `${type}: ${text}` : text,
+          ts: Date.now(),
+        });
+      } catch {
+        // never throw
+      }
+    }
+
+    // Servers using `event: <name>` lines deliver NAMED events that never fire
+    // the plain "message" listener (most LLM/streaming APIs do this). Mirror
+    // the page's own registrations: the first time it listens for a custom
+    // type, attach ONE recorder listener for that type too. open/error/message
+    // are already wired in the constructor.
+    override addEventListener<K extends keyof EventSourceEventMap>(
+      type: K,
+      listener: (this: EventSource, ev: EventSourceEventMap[K]) => unknown,
+      options?: boolean | AddEventListenerOptions,
+    ): void;
+    override addEventListener(
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ): void;
+    override addEventListener(
+      type: string,
+      listener: EventListenerOrEventListenerObject | null,
+      options?: boolean | AddEventListenerOptions,
+    ): void {
+      try {
+        if (
+          type !== 'open' &&
+          type !== 'error' &&
+          type !== 'message' &&
+          this.__gotchaHooked !== undefined &&
+          !this.__gotchaHooked.has(type)
+        ) {
+          this.__gotchaHooked.add(type);
+          super.addEventListener(type, ((event: MessageEvent) => {
+            this.__gotchaRecord(event.data, type);
+          }) as EventListener);
+        }
+      } catch {
+        // recorder wiring must never block the page's own registration
+      }
+      super.addEventListener(type, listener as EventListener, options);
     }
   }
 

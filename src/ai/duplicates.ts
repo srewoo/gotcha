@@ -24,9 +24,13 @@ export interface DuplicateMatch {
 function fingerprint(b: CaptureBundle): string {
   const failed = b.network.find((n) => n.failed);
   const err = b.console.find((c) => c.level === 'error');
-  const signal = b.aiAnalysis?.summary ?? failed
-    ? `${failed?.status} ${failed?.method} ${failed?.url}`
-    : (err?.message ?? b.title);
+  // The AI summary is the strongest signal when present; fall back to the
+  // first failed request, then the first console error, then the title.
+  // (Parenthesized deliberately — `a ?? b ? x : y` parses as `(a ?? b) ? x : y`,
+  // which silently discarded the summary and produced "undefined undefined".)
+  const signal =
+    b.aiAnalysis?.summary ??
+    (failed ? `${failed.status} ${failed.method} ${failed.url}` : (err?.message ?? b.title));
   return `${b.title} :: ${signal}`.slice(0, 200);
 }
 
@@ -42,7 +46,12 @@ export async function findDuplicates(
   recent: CaptureBundle[],
   cfg: AiConfig,
 ): Promise<DuplicateMatch[]> {
-  const candidates = recent.filter((b) => b.id !== current.id).slice(0, 30);
+  // allBundles() returns key order (random UUIDs), so sort by recency before
+  // capping — otherwise "the 30 most recent" was 30 arbitrary bundles.
+  const candidates = recent
+    .filter((b) => b.id !== current.id)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 30);
   if (candidates.length === 0) return [];
 
   const user = [
@@ -59,7 +68,16 @@ export async function findDuplicates(
   const fenced = raw.replace(/```(?:json)?/gi, '').trim();
   const start = fenced.indexOf('{');
   const end = fenced.lastIndexOf('}');
-  const parsed = DupResult.safeParse(JSON.parse(fenced.slice(start, end + 1)));
+  // A prose-only reply (no braces) or malformed JSON means "no matches", the
+  // same graceful degradation as a schema failure — never an escaped throw.
+  if (start < 0 || end <= start) return [];
+  let json: unknown;
+  try {
+    json = JSON.parse(fenced.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+  const parsed = DupResult.safeParse(json);
   if (!parsed.success) return [];
 
   const byId = new Map(candidates.map((b) => [b.id, b.title]));

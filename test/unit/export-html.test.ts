@@ -65,6 +65,66 @@ describe('share/export-html — exportBundleHtml', () => {
     expect(html).not.toContain('supersecret-token-value');
   });
 
+  it('escapes every < in the embedded replay JSON when snapshot HTML carries script-breaking sequences', () => {
+    const { html } = exportBundleHtml(
+      makeBundle({
+        replay: [
+          // `<!--` + `<script` inside script text flips the HTML parser into the
+          // double-escaped state; a literal </script> closes the block early.
+          { t: 0, kind: 'snapshot', html: '<html><body><!--<script>x</script>--></body></html>' },
+          { t: 5, kind: 'input', selector: '#a', value: '</script><script>evil()</script>' },
+        ],
+      }),
+      { redact: false },
+    );
+    const m = html.match(/var EVENTS = (.*);/);
+    expect(m).toBeTruthy();
+    // No raw `<` may survive inside the inline JSON — < only.
+    expect(m![1]).not.toContain('<');
+    expect(m![1]).toContain('\\u003c');
+  });
+
+  it('escapes the screenshot data URL when it carries attribute-breaking characters', () => {
+    const { html } = exportBundleHtml(
+      makeBundle({
+        screenshotDataUrl: 'data:image/png;base64,AAAA" onerror="alert(1)',
+      }),
+      { redact: false },
+    );
+    expect(html).not.toContain('" onerror="alert(1)');
+    expect(html).toContain('src="data:image/png;base64,AAAA&quot; onerror=&quot;alert(1)"');
+  });
+
+  it('renders mutation frames in the inline viewer when the initial snapshot rolled out of the ring', () => {
+    const mutationHtml = '<body><main>frame-after-rollout</main></body>';
+    const { html } = exportBundleHtml(
+      makeBundle({
+        // No snapshot event at all — only deltas + a mutation body-frame, the
+        // shape of a long recording whose initial snapshot left the ring.
+        replay: [
+          { t: 100, kind: 'scroll', x: 0, y: 250 },
+          { t: 200, kind: 'mutation', selector: 'body', html: mutationHtml },
+        ],
+      }),
+      { redact: false },
+    );
+    // Execute the inline viewer script against stubbed DOM elements and assert
+    // the mutation frame is written into the iframe like a snapshot.
+    const script = html.match(/<script>\s*\(function \(\) \{([\s\S]*?)\}\)\(\);\s*<\/script>/);
+    expect(script).toBeTruthy();
+    const writes: string[] = [];
+    const stubEl = (): Record<string, unknown> => ({ textContent: '', addEventListener: () => {} });
+    const frame = {
+      contentDocument: { open: () => {}, write: (h: string) => writes.push(h), close: () => {} },
+    };
+    const fakeDoc = {
+      getElementById: (id: string) => (id === 'replay-frame' ? frame : stubEl()),
+    };
+    new Function('document', `(function () {${script![1]}})();`)(fakeDoc);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('frame-after-rollout');
+  });
+
   it('embeds a replay payload when replay events exist', () => {
     const { html } = exportBundleHtml(
       makeBundle({

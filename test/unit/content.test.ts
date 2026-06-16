@@ -89,6 +89,89 @@ describe('content script — capture lifecycle messaging', () => {
     expect(res.error).toBe('disk full');
   });
 
+  it('should buffer a sub-frame bridge event when the worker relays frame:event', async () => {
+    const before = (await onMessage({ type: 'capture:status' })).status.counts.console;
+    const res = await onMessage({
+      type: 'frame:event',
+      payload: { marker: BRIDGE_MARKER, type: 'console', entry: { id: 'fc1', level: 'log', message: 'from sub-frame', ts: 2 } },
+    });
+    expect(res).toEqual({ ok: true });
+    const after = (await onMessage({ type: 'capture:status' })).status.counts.console;
+    expect(after).toBe(before + 1);
+  });
+
+  it('should not buffer a frame:event whose payload is not a bridge message', async () => {
+    const before = (await onMessage({ type: 'capture:status' })).status.counts;
+    const res = await onMessage({ type: 'frame:event', payload: { type: 'console', entry: { id: 'x' } } });
+    expect(res).toEqual({ ok: true });
+    const after = (await onMessage({ type: 'capture:status' })).status.counts;
+    expect(after).toEqual(before);
+  });
+
+  it('should ignore a forged window message using the old frame-forward marker', async () => {
+    const before = (await onMessage({ type: 'capture:status' })).status.counts;
+    // A third-party iframe (or the host page) posting the legacy relay shape
+    // must no longer poison the buffers — the window relay is gone.
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: {
+          marker: '__gotcha_frame_fwd__',
+          payload: { marker: BRIDGE_MARKER, type: 'console', entry: { id: 'evil', level: 'error', message: 'forged', ts: 3 } },
+        },
+        source: window as unknown as Window,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    const after = (await onMessage({ type: 'capture:status' })).status.counts;
+    expect(after).toEqual(before);
+  });
+
+  it('should not mutate the live buffer event when enrichment patches the seed snapshot', async () => {
+    // Fresh session so finishCapture packages the live buffers directly (the
+    // path that previously wrote enriched HTML through to the ring's object).
+    await onMessage({ type: 'capture:start' });
+    const liveEvent = { t: 0, kind: 'snapshot', html: '<html><head></head><body>y</body></html>' };
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { marker: BRIDGE_MARKER, type: 'replay', event: liveEvent },
+        source: window as unknown as Window,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+
+    // One unreadable cross-origin stylesheet so enrichment has work to do.
+    Object.defineProperty(document, 'styleSheets', {
+      configurable: true,
+      get: () => [
+        {
+          href: 'https://cdn.example.com/x.css',
+          get cssRules(): never {
+            throw new Error('CORS');
+          },
+        },
+      ],
+    });
+
+    let savedBundle: any;
+    (chromeApi.runtime.sendMessage as unknown as ReturnType<typeof vi.fn>).mockImplementation((m: any) => {
+      if (m.type === 'css:fetch') {
+        return Promise.resolve({ type: 'css:fetched', ok: true, css: { 'https://cdn.example.com/x.css': '.a{color:red}' } });
+      }
+      savedBundle = m.bundle;
+      return Promise.resolve({ type: 'bundle:saved', ok: true, reviewUrl: 'chrome-extension://x/review.html?id=m' });
+    });
+
+    const res = await onMessage({ type: 'capture:finish' });
+    expect(res.ok).toBe(true);
+    // The saved bundle's seed carries the injected style…
+    const seed = savedBundle.replay.find((e: any) => e.kind === 'snapshot');
+    expect(seed.html).toContain('data-gotcha-xorigin');
+    // …but the object that was owned by the live ring is untouched.
+    expect(liveEvent.html).toBe('<html><head></head><body>y</body></html>');
+
+    Object.defineProperty(document, 'styleSheets', { configurable: true, get: () => [] });
+  });
+
   it('shares the last minute, enriching cross-origin CSS via the worker', async () => {
     // Seed a replay snapshot so enrichCrossOriginCss has a seed to patch.
     window.dispatchEvent(

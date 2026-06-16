@@ -95,7 +95,9 @@ function renderReports(rows: BundleSummary[]): void {
 async function deleteReport(id: string): Promise<void> {
   if (!confirm(`Delete report ${gotId(id)}? This cannot be undone.`)) return;
   await chrome.runtime.sendMessage({ type: 'bundle:delete', id });
-  await init();
+  // Re-render only — re-running init() would stack a second set of nav
+  // listeners (with stale captured rows) on every delete.
+  await refresh();
 }
 
 async function renderTests(rows: BundleSummary[]): Promise<void> {
@@ -143,21 +145,40 @@ function showView(view: View): void {
   });
 }
 
-async function init(): Promise<void> {
+// Re-fetch summaries and repaint every data-driven panel. Safe to call after
+// any mutation (e.g. delete) — listener wiring lives in bindNav() instead, so
+// repainting never duplicates handlers.
+async function refresh(): Promise<void> {
   const rows = await listSummaries();
   renderKpis(rows);
   renderStorageWarning(rows);
   renderReports(rows);
   renderInsights(rows);
+}
 
+// Bound-once guard: init() used to attach these on every call, so each delete
+// stacked another handler closing over a stale row list — N+1 handlers,
+// interleaved async re-renders, and cards for deleted reports.
+let navBound = false;
+
+function bindNav(): void {
+  if (navBound) return;
+  navBound = true;
   document.querySelectorAll<HTMLElement>('.nv[data-view]').forEach((nv) => {
     nv.addEventListener('click', () => {
       const view = nv.dataset.view as View;
       showView(view);
-      if (view === 'tests') void renderTests(rows);
+      // Re-fetch on demand so the tests view always reflects current data,
+      // not the rows captured when the listener was bound.
+      if (view === 'tests') void listSummaries().then((rows) => renderTests(rows));
     });
   });
   $('nav-settings').addEventListener('click', () => void chrome.runtime.openOptionsPage());
+}
+
+async function init(): Promise<void> {
+  bindNav();
+  await refresh();
 }
 
 void init();

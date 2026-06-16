@@ -1,8 +1,9 @@
-// Canvas screenshot annotator (MVP feature 2): box, arrow, blur. Composites
-// annotations over the captured screenshot and exports a flattened PNG. Kept
-// dependency-free — just 2D canvas.
+// Canvas screenshot annotator (MVP feature 2): box, arrow, blur, and numbered
+// comment pins. Composites annotations over the captured screenshot and exports
+// a flattened PNG. Kept dependency-free — just 2D canvas, plus a single floating
+// <input> for typing a pin's comment.
 
-export type Tool = 'box' | 'arrow' | 'blur';
+export type Tool = 'box' | 'arrow' | 'blur' | 'pin';
 
 interface Shape {
   tool: Tool;
@@ -10,6 +11,9 @@ interface Shape {
   y1: number;
   x2: number;
   y2: number;
+  // Pin-only: 1-based marker number and its (optional) comment text.
+  n?: number;
+  note?: string;
 }
 
 const RED = '#e0483d';
@@ -22,6 +26,9 @@ export class Annotator {
   private tool: Tool = 'box';
   private scale = 1;
   private ready = false;
+  private pinCount = 0;
+  // The floating comment editor for the pin currently being labelled.
+  private editor: HTMLInputElement | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -40,12 +47,25 @@ export class Annotator {
     this.tool = tool;
   }
 
+  // Number of comment pins placed (for the review UI's caption / counts).
+  get pinCount_(): number {
+    return this.pinCount;
+  }
+
+  // All pin comments in placement order, e.g. ["1. Wrong total", "2. ..."].
+  comments(): string[] {
+    return this.shapes
+      .filter((s) => s.tool === 'pin')
+      .map((s) => `${s.n}. ${s.note?.trim() || '(no comment)'}`);
+  }
+
   get dirty(): boolean {
     return this.shapes.length > 0;
   }
 
   undo(): void {
-    this.shapes.pop();
+    const removed = this.shapes.pop();
+    if (removed?.tool === 'pin' && this.pinCount > 0) this.pinCount--;
     this.redraw();
   }
 
@@ -76,6 +96,13 @@ export class Annotator {
     let drawing = false;
     this.canvas.addEventListener('pointerdown', (e) => {
       if (!this.ready) return;
+      // A comment pin is a single click, not a drag: place it and open the
+      // inline comment editor right away.
+      if (this.tool === 'pin') {
+        const p = this.toCanvas(e);
+        this.placePin(p.x, p.y, e);
+        return;
+      }
       drawing = true;
       const p = this.toCanvas(e);
       this.draft = { tool: this.tool, x1: p.x, y1: p.y, x2: p.x, y2: p.y };
@@ -101,6 +128,56 @@ export class Annotator {
     this.canvas.addEventListener('pointercancel', finish);
   }
 
+  // Drop a numbered pin and float a text input next to it for the comment. The
+  // comment is stored on the shape and flattened into the exported PNG, so it
+  // rides along with the screenshot when the report is filed — no extra plumbing.
+  private placePin(x: number, y: number, e: PointerEvent): void {
+    const shape: Shape = { tool: 'pin', x1: x, y1: y, x2: x, y2: y, n: ++this.pinCount, note: '' };
+    this.shapes.push(shape);
+    this.redraw();
+    this.openEditor(shape, e.clientX, e.clientY);
+  }
+
+  private openEditor(shape: Shape, clientX: number, clientY: number): void {
+    this.closeEditor();
+    const host = this.canvas.parentElement;
+    if (!host) return;
+    const hostRect = host.getBoundingClientRect();
+    const input = document.createElement('input');
+    input.className = 'anno-comment-input';
+    input.placeholder = `Comment for pin ${shape.n}…`;
+    input.value = shape.note ?? '';
+    input.style.position = 'absolute';
+    input.style.left = `${clientX - hostRect.left + 10}px`;
+    input.style.top = `${clientY - hostRect.top + 10}px`;
+    const commit = (): void => {
+      shape.note = input.value;
+      this.closeEditor();
+      this.redraw();
+    };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        commit();
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        this.closeEditor();
+        this.redraw();
+      }
+    });
+    input.addEventListener('blur', commit);
+    host.appendChild(input);
+    this.editor = input;
+    input.focus();
+  }
+
+  private closeEditor(): void {
+    if (this.editor) {
+      this.editor.remove();
+      this.editor = null;
+    }
+  }
+
   private redraw(): void {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -117,7 +194,55 @@ export class Annotator {
         return this.drawArrow(s);
       case 'blur':
         return this.drawBlur(s);
+      case 'pin':
+        return this.drawPin(s);
     }
+  }
+
+  // A numbered red marker; when a comment exists, a label bubble to its right.
+  // Sizes scale with the screenshot resolution so pins read at any DPR.
+  private drawPin(s: Shape): void {
+    const ctx = this.ctx;
+    const r = Math.max(11, this.canvas.width / 90);
+    const font = Math.round(r * 1.1);
+    // Marker disc.
+    ctx.beginPath();
+    ctx.fillStyle = RED;
+    ctx.arc(s.x1, s.y1, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, r / 7);
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+    // Number.
+    ctx.fillStyle = '#fff';
+    ctx.font = `700 ${font}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(s.n ?? ''), s.x1, s.y1 + 1);
+    // Comment bubble.
+    const note = s.note?.trim();
+    if (note) {
+      const padX = r * 0.7;
+      const labelFont = Math.round(r * 1.05);
+      ctx.font = `600 ${labelFont}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = 'left';
+      const textW = Math.min(ctx.measureText(note).width, this.canvas.width * 0.5);
+      const bx = s.x1 + r + 6;
+      const by = s.y1 - r;
+      const bw = textW + padX * 2;
+      const bh = r * 2;
+      ctx.fillStyle = 'rgba(20,18,16,0.92)';
+      ctx.beginPath();
+      const rad = r * 0.4;
+      ctx.roundRect(bx, by, bw, bh, rad);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(note, bx + padX, by + bh / 2 + 1, textW);
+    }
+    // Reset alignment so other shapes draw predictably.
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
   }
 
   private drawBox(s: Shape): void {

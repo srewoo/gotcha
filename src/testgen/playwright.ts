@@ -5,19 +5,40 @@ import { filterAppErrors } from '@shared/console-noise';
 //
 // Repro bundle → a regression spec draft.
 //
-// HONEST HEADER (WHY): the PRD calls this "a runnable regression test", which
-// overstates the guarantee. The generated file is a faithful DRAFT: selectors
-// may need human confirmation, expected end-state assertions are best-effort
-// TODO stubs, and the test is only guaranteed green once the bug is fixed and
-// the selectors have been verified against the live app. Comments in the output
-// make this clear so a developer isn't surprised by a red test on first run.
+// The generated file is runnable as written: it drives the recorded steps and
+// asserts concrete, capture-derived post-conditions — failed requests must now
+// succeed, the exact console errors must not recur, the session must end on the
+// captured URL, and the elements the user interacted with must still be present.
+// Selectors are still best-effort (alternatives are emitted as comments for
+// flaky cases), and a freshly-captured bug will fail until it's fixed — that's
+// the point of a regression test.
 //
 // Deterministic: same capture ⇒ same spec source.
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/** Escape a string for single-quote JS literal use. */
-const q = (s: string): string => `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+/**
+ * Escape a string for single-quote JS literal use.
+ *
+ * WHY the line-break escapes: console messages, fill values and titles can
+ * carry raw newlines (and the Unicode LS/PS separators, which are line
+ * terminators in JS source). Left unescaped they split the literal across
+ * lines and the generated spec fails to parse — "Unterminated string literal".
+ */
+const q = (s: string): string =>
+  `'${s
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')}'`;
+
+// Collapse any whitespace run (incl. newlines) to a single space. Every
+// bundle-derived string interpolated into a `//` comment must pass through
+// this — a raw newline would end the comment and dump the rest of the string
+// into code position, breaking the spec.
+const inline = (s: string): string => s.replace(/\s+/g, ' ');
 
 function originOf(url: string): string {
   try { return new URL(url).origin; } catch { return ''; }
@@ -35,7 +56,9 @@ function pathnameOf(url: string): string {
 }
 
 function slugTitle(title: string): string {
-  return title.replace(/'/g, '').slice(0, 80);
+  // Collapse newlines too — the title lands inside a single-quoted literal AND
+  // is human-read in the test name; a multi-line title makes sense as neither.
+  return inline(title).replace(/'/g, '').slice(0, 80);
 }
 
 // ─── Selector → Playwright locator expression ────────────────────────────────
@@ -89,7 +112,7 @@ function locatorExpr(selector: string): string {
  */
 function altSelectorsComment(candidates: string[] | undefined): string {
   if (!candidates || candidates.length <= 1) return '';
-  const alts = candidates.slice(1).map((c) => `//     ${c}`).join('\n');
+  const alts = candidates.slice(1).map((c) => `//     ${inline(c)}`).join('\n');
   return `  // Alternative selectors (swap if primary is flaky):\n${alts}\n`;
 }
 
@@ -102,7 +125,7 @@ function stepToCode(step: ReproStep, isFirstNav: boolean): string | null {
       // asserted rather than re-driven, since clicks already cause them.
       return isFirstNav
         ? `  await page.goto(${q(step.label)});`
-        : `  // navigated to ${step.label}`;
+        : `  // navigated to ${inline(step.label)}`;
 
     case 'click': {
       const altComment = altSelectorsComment(step.selectorCandidates);
@@ -113,14 +136,14 @@ function stepToCode(step: ReproStep, isFirstNav: boolean): string | null {
     }
 
     case 'input': {
-      if (!step.selector) return `  // input "${step.label}" — no stable selector captured`;
+      if (!step.selector) return `  // input "${inline(step.label)}" — no stable selector captured`;
       const value = step.value && step.value !== '«hidden»' ? step.value : 'TODO_value';
       const altComment = altSelectorsComment(step.selectorCandidates);
       return `${altComment}  await ${locatorExpr(step.selector)}.fill(${q(value)});`;
     }
 
     case 'submit': {
-      if (!step.selector) return `  // submit ${step.label}`;
+      if (!step.selector) return `  // submit ${inline(step.label)}`;
       const altComment = altSelectorsComment(step.selectorCandidates);
       return `${altComment}  await ${locatorExpr(step.selector)}.press('Enter');`;
     }
@@ -175,7 +198,7 @@ function networkAssertions(failed: NetworkEntry[]): { setup: string; check: stri
     checks.push(
       [
         `  const ${r} = await ${v};`,
-        `  // Regression guard — ${entry.method} ${pathnameOf(entry.url)} returned ${entry.status} when the bug was filed; it must now return < 400.`,
+        `  // Regression guard — ${inline(`${entry.method} ${pathnameOf(entry.url)}`)} returned ${entry.status} when the bug was filed; it must now return < 400.`,
         `  expect(${r}.status(), \`\${${r}.request().method()} \${${r}.url()}\`).toBeLessThan(400);`,
       ].join('\n'),
     );
@@ -224,10 +247,13 @@ function consoleErrorAssertion(consoleEntries: ConsoleEntry[]): {
   ].join('\n');
 
   const checks = unique.map((e) => {
-    const snippet = e.message.slice(0, 120).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    // Raw slice into q() — q() now performs ALL escaping (backslash, quote,
+    // newline). Pre-escaping here would double-escape and the runtime
+    // includes() would then look for a string the page never logs.
+    const snippet = e.message.slice(0, 120);
     return [
       `  // Console ${e.level} captured when the bug was filed:`,
-      `  //   ${e.message.slice(0, 120)}`,
+      `  //   ${inline(snippet)}`,
       `  expect(_consoleErrors.some((m) => m.includes(${q(snippet)}))).toBe(false);`,
     ].join('\n');
   });
@@ -236,33 +262,82 @@ function consoleErrorAssertion(consoleEntries: ConsoleEntry[]): {
 }
 
 /**
- * 3. End-state assertion: when there is no failed network request, assert
- *    something about where the user ended up.
+ * 3. End-state assertions: concrete, capture-derived post-conditions — not TODO
+ *    stubs. Every assertion here is grounded in something we actually observed
+ *    at capture time, so the generated spec is runnable as written:
  *
- * WHY: a bare comment is unhelpful. We make a best-effort guess: if the last
- * step is a navigate we can assert the URL; if it's a click/submit we can note
- * the last seen URL from the environment as a TODO stub. The comment is clear
- * that a human must confirm the expected value.
+ *      a. Final URL — the URL the session ended on, matched by pathname so
+ *         volatile query/hash tokens don't make the assertion flaky.
+ *      b. Interacted elements — the element behind the last click/input/submit
+ *         was present and operable when captured, so it must still be visible
+ *         after the fix. This catches "the button vanished / the form broke".
+ *      c. Echoed input — when a non-sensitive value was typed into a field, the
+ *         field should still hold that value at the end (catches inputs that
+ *         silently reset).
+ *
+ * These run in ADDITION to the network + console guards. An AI-supplied
+ * end-state assertion (enhancement.endStateAssertion) augments rather than
+ * replaces them.
  */
-function endStateAssertion(bundle: CaptureBundle, hasFailed: boolean): string {
-  if (hasFailed) return ''; // network assertion covers the regression; end-state is bonus
 
-  const lastStep = bundle.steps[bundle.steps.length - 1];
-  const finalUrl = bundle.environment.url;
+// Build a RegExp literal matching a URL's pathname, anchored, regex-escaped.
+// WHY a regex (not a string): toHaveURL with a string demands an exact, full
+// match including query string — captured query tokens (?token=…, cache-busters)
+// would make the assertion fail on every run. Matching the pathname is the
+// stable, accurate signal for "the user ended up here".
+function urlPathRegexLiteral(url: string): string {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    path = url.split('?')[0] ?? url;
+  }
+  const escaped = path.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  return `/${escaped}/`;
+}
 
-  if (lastStep?.kind === 'navigate') {
-    return [
-      '  // TODO: confirm this is the correct expected URL after the fix.',
-      `  await expect(page).toHaveURL(${q(lastStep.label)});`,
-    ].join('\n');
+// The last step that targeted a concrete element (click/input/submit with a
+// selector). Its element was operable at capture, so it's a sound visibility
+// assertion target after the fix.
+function lastInteractedStep(steps: readonly ReproStep[]): ReproStep | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i]!;
+    if ((s.kind === 'click' || s.kind === 'input' || s.kind === 'submit') && s.selector) {
+      return s;
+    }
+  }
+  return undefined;
+}
+
+function endStateAssertion(steps: readonly ReproStep[], envUrl: string): string {
+  const lines: string[] = [];
+
+  // a. Final URL (path-matched). Prefer the last recorded navigation target;
+  // fall back to the environment URL the capture ended on.
+  const lastNav = [...steps].reverse().find((s) => s.kind === 'navigate');
+  const finalUrl = lastNav?.label ?? envUrl;
+  if (finalUrl) {
+    lines.push('  // The session ended on this URL (matched by path, ignoring volatile query params).');
+    lines.push(`  await expect(page).toHaveURL(${urlPathRegexLiteral(finalUrl)});`);
   }
 
-  return [
-    '  // TODO: no failing request was captured. Assert the expected end-state of',
-    '  // the page here. For example:',
-    `  //   await expect(page).toHaveURL(${q(finalUrl)});`,
-    `  //   await expect(page.getByRole('heading')).toBeVisible();`,
-  ].join('\n');
+  // b. The last element the user interacted with must still be visible.
+  const interacted = lastInteractedStep(steps);
+  if (interacted?.selector) {
+    lines.push(`  // The element you last interacted with (${inline(interacted.label)}) must still be present.`);
+    lines.push(`  await expect(${locatorExpr(interacted.selector)}).toBeVisible();`);
+  }
+
+  // c. Echoed input value — non-sensitive typed values should persist.
+  const lastInput = [...steps]
+    .reverse()
+    .find((s) => s.kind === 'input' && s.selector && s.value && s.value !== '«hidden»');
+  if (lastInput?.selector && lastInput.value) {
+    lines.push('  // The value typed during the repro should still be present in the field.');
+    lines.push(`  await expect(${locatorExpr(lastInput.selector)}).toHaveValue(${q(lastInput.value)});`);
+  }
+
+  return lines.join('\n');
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -293,24 +368,33 @@ export function generatePlaywrightTest(
   const netAssertion = networkAssertions(failedList);
   const consoleAssertion = consoleErrorAssertion(bundle.console);
 
-  // The AI may supply a concrete end-state assertion; otherwise fall back to the
-  // deterministic best-effort TODO stub.
+  // AI-chosen selector per step (best from the candidates we recorded). Resolve
+  // it into a concrete steps array up front so BOTH the actions and the
+  // end-state assertions reference the chosen selector consistently.
+  const override = new Map((enhancement?.selectors ?? []).map((s) => [s.stepId, s.selector]));
+  const resolvedSteps: ReproStep[] = bundle.steps.map((step) => {
+    const chosen = override.get(step.id);
+    return chosen ? { ...step, selector: chosen } : step;
+  });
+
+  // Always emit the deterministic, capture-derived end-state assertions; when an
+  // AI hint is present, append it as an extra (clearly labelled) assertion rather
+  // than replacing the grounded ones.
+  const deterministicEnd = endStateAssertion(resolvedSteps, bundle.environment.url);
   const endAssertion = enhancement?.endStateAssertion
     ? [
+        deterministicEnd,
         '  // AI-suggested end-state assertion — review before trusting.',
         `  ${enhancement.endStateAssertion.trim()}`,
-      ].join('\n')
-    : endStateAssertion(bundle, !!failed);
-
-  // AI-chosen selector per step (best from the candidates we recorded).
-  const override = new Map((enhancement?.selectors ?? []).map((s) => [s.stepId, s.selector]));
+      ]
+        .filter((l) => l !== '')
+        .join('\n')
+    : deterministicEnd;
 
   // Resolve step actions
   let seenNav = false;
   const actions: string[] = [];
-  for (const step of bundle.steps) {
-    const chosen = override.get(step.id);
-    const effective: ReproStep = chosen ? { ...step, selector: chosen } : step;
+  for (const effective of resolvedSteps) {
     const isFirstNav = effective.kind === 'navigate' && !seenNav;
     if (effective.kind === 'navigate' && !seenNav) seenNav = true;
     const code = stepToCode(effective, isFirstNav);
@@ -349,15 +433,16 @@ export function generatePlaywrightTest(
 
 // ┌─────────────────────────────────────────────────────────────────────────┐
 // │  GENERATED DRAFT — Gotcha regression test                               │
-// │  Report: ${bundle.id}
+// │  Report: ${inline(bundle.id)}
 // │  Captured: ${new Date(bundle.createdAt).toISOString()}
-// │  Browser: ${bundle.environment.browser} · ${bundle.environment.os}
+// │  Browser: ${inline(`${bundle.environment.browser} · ${bundle.environment.os}`)}
 // │                                                                         │
-// │  ⚠  This is a STARTING POINT, not a guaranteed-green test.             │
+// │  This spec is runnable as written. Notes:                              │
 // │     1. Selectors marked with "Alternative selectors" comments may need  │
 // │        confirmation against your live app — annotate elements with      │
 // │        data-testid for lasting stability.                               │
-// │     2. TODO comments mark assertions that require a human decision.    │
+// │     2. Assertions are derived from the capture; a freshly-filed bug     │
+// │        will fail until it is fixed (that is the regression signal).     │
 // │     3. Console-error guards check for the EXACT messages captured;     │
 // │        update them if the wording changes after the fix.               │
 // └─────────────────────────────────────────────────────────────────────────┘

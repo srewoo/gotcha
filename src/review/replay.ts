@@ -72,25 +72,81 @@ function extractHeadExtras(snapshotHtml: string): string {
   }
 }
 
-// Apply a single event to the live iframe + cursor.
-function applyEvent(
-  event: ReplayEvent,
-  iframe: HTMLIFrameElement,
-  cursor: HTMLElement,
-  viewportLabel: HTMLElement,
-  wrap: (html: string) => string,
-): void {
+// ─── Cursor projection (exported for unit tests) ─────────────────────────────
+//
+// Mouse events store clientX/Y in the ORIGINAL viewport's coordinate space,
+// but the replay iframe usually renders much smaller — raw coordinates land
+// far outside the visible frame. Scale by the width ratio, then clamp inside
+// the player wrap so the fixed-position dot can never drift over unrelated
+// review UI. Returned coordinates are offsets from the wrap's origin.
+export function projectCursor(
+  evX: number,
+  evY: number,
+  iframeWidth: number,
+  capturedWidth: number,
+  maxX: number,
+  maxY: number,
+): { x: number; y: number } {
+  const scale = capturedWidth > 0 && iframeWidth > 0 ? iframeWidth / capturedWidth : 1;
+  const clamp = (v: number, max: number): number => Math.min(Math.max(v, 0), Math.max(max, 0));
+  return { x: clamp(evX * scale, maxX), y: clamp(evY * scale, maxY) };
+}
+
+// ─── Frame gate (exported for unit tests) ─────────────────────────────────────
+//
+// Assigning iframe.srcdoc parses ASYNCHRONOUSLY: scroll/input deltas applied
+// synchronously right after the assignment land on the PREVIOUS document and
+// are discarded with it. The gate queues deltas while a swap is in flight and
+// hands them back when the iframe's `load` fires; a monotonic token makes a
+// superseded load (rapid scrubbing) a no-op instead of replaying stale deltas
+// onto a newer document.
+export class FrameGate {
+  private token = 0;
+  private loading = false;
+  private queue: ReplayEvent[] = [];
+
+  /** A new srcdoc swap starts: drop deltas queued for the superseded frame. */
+  beginSwap(): number {
+    this.loading = true;
+    this.queue = [];
+    return ++this.token;
+  }
+
+  /** Queue a delta while a swap is in flight. Returns true when queued. */
+  defer(ev: ReplayEvent): boolean {
+    if (!this.loading) return false;
+    this.queue.push(ev);
+    return true;
+  }
+
+  /**
+   * The iframe finished loading for `token`. Returns the queued deltas to
+   * apply, or null when a later swap superseded this load.
+   */
+  completeSwap(token: number): ReplayEvent[] | null {
+    if (token !== this.token) return null;
+    this.loading = false;
+    const queued = this.queue;
+    this.queue = [];
+    return queued;
+  }
+}
+
+// Everything a delta needs to mutate the live player.
+interface PlayerCtx {
+  iframe: HTMLIFrameElement;
+  cursor: HTMLElement;
+  viewportLabel: HTMLElement;
+  viewportWrap: HTMLElement;
+  capturedWidth: number;
+}
+
+// Apply a single delta (non-frame) event to the live iframe + overlays.
+// Snapshot/mutation frames are handled by the frame gate in mountReplay.
+function applyDelta(event: ReplayEvent, ctx: PlayerCtx): void {
   switch (event.kind) {
-    case 'snapshot':
-    case 'mutation': {
-      if (event.html != null) {
-        // srcdoc triggers a full re-parse — safe because sandbox blocks scripts.
-        iframe.srcdoc = wrap(event.html);
-      }
-      break;
-    }
     case 'scroll': {
-      const doc = iframe.contentDocument;
+      const doc = ctx.iframe.contentDocument;
       if (!doc) break;
       // A selector means an inner scroll container; otherwise it's the window.
       if (event.selector) {
@@ -109,7 +165,7 @@ function applyEvent(
       // Reflect the value into the matching element so the iframe state is
       // consistent (useful when scrubbing paused at an input event).
       if (event.selector) {
-        const doc = iframe.contentDocument;
+        const doc = ctx.iframe.contentDocument;
         const el = doc?.querySelector<HTMLInputElement>(event.selector);
         if (el && event.value != null) el.value = event.value;
       }
@@ -119,19 +175,29 @@ function applyEvent(
       const w = event.w ?? 0;
       const h = event.h ?? 0;
       if (w > 0 && h > 0) {
-        viewportLabel.textContent = `${w} × ${h}`;
+        ctx.viewportLabel.textContent = `${w} × ${h}`;
       }
       break;
     }
     case 'mouse': {
-      // Position cursor dot relative to the iframe element.
-      const rect = iframe.getBoundingClientRect();
-      const x = (event.x ?? 0) + rect.left;
-      const y = (event.y ?? 0) + rect.top;
-      cursor.style.transform = `translate(${x}px, ${y}px)`;
-      cursor.style.display = 'block';
+      // Project original-viewport coordinates into the (smaller) iframe and
+      // clamp inside the wrap. The dot is position:fixed, so translate in page
+      // coordinates anchored at the wrap's origin.
+      const wrapRect = ctx.viewportWrap.getBoundingClientRect();
+      const p = projectCursor(
+        event.x ?? 0,
+        event.y ?? 0,
+        ctx.iframe.clientWidth,
+        ctx.capturedWidth,
+        wrapRect.width,
+        wrapRect.height,
+      );
+      ctx.cursor.style.transform = `translate(${wrapRect.left + p.x}px, ${wrapRect.top + p.y}px)`;
+      ctx.cursor.style.display = 'block';
       break;
     }
+    default:
+      break;
   }
 }
 
@@ -260,26 +326,61 @@ export function mountReplay(host: HTMLElement, bundle: CaptureBundle): void {
   let eventIdx = 0;         // next event index to apply
   let rafHandle = 0;
 
+  const ctx: PlayerCtx = {
+    iframe,
+    cursor,
+    viewportLabel,
+    viewportWrap,
+    capturedWidth: bundle.environment.viewport.width,
+  };
+  const gate = new FrameGate();
+
+  // Swap the iframe to a new frame. srcdoc parses asynchronously, so deltas
+  // dispatched while it loads are queued by the gate and applied in the one-shot
+  // `load` handler — applying them synchronously here would mutate the OLD
+  // document, which is discarded when parsing finishes.
+  function setFrame(html: string): void {
+    const token = gate.beginSwap();
+    iframe.addEventListener(
+      'load',
+      () => {
+        const queued = gate.completeSwap(token);
+        if (!queued) return; // a later seek/frame superseded this load
+        for (const ev of queued) applyDelta(ev, ctx);
+      },
+      { once: true },
+    );
+    iframe.srcdoc = wrap(html);
+  }
+
+  // Route an event: frames swap the document, deltas apply immediately — or
+  // queue behind an in-flight swap so they land on the document they belong to.
+  function dispatch(ev: ReplayEvent): void {
+    if (ev.kind === 'snapshot' || ev.kind === 'mutation') {
+      if (ev.html != null) setFrame(ev.html);
+      return;
+    }
+    if (gate.defer(ev)) return;
+    applyDelta(ev, ctx);
+  }
+
   function updateScrubberUI(): void {
     scrubber.value = String(currentT);
     timeEl.textContent = `${fmt(currentT)} / ${fmt(duration)}`;
   }
 
   // Seek to `targetT`: find last snapshot at/before, apply it, then fast-apply
-  // all events from there to targetT.
+  // all events from there to targetT (queued behind the snapshot's load).
   function seekTo(targetT: number): void {
     currentT = Math.max(0, Math.min(targetT, duration));
     const snapIdx = lastSnapshotBefore(events, currentT);
     if (snapIdx >= 0) {
-      const snapEvent = events[snapIdx]!;
-      if (snapEvent.html != null) {
-        iframe.srcdoc = wrap(snapEvent.html);
-      }
+      dispatch(events[snapIdx]!);
       // Fast-apply events from snapIdx+1 up to currentT.
       for (let i = snapIdx + 1; i < events.length; i++) {
         const ev = events[i]!;
         if (ev.t > currentT) break;
-        applyEvent(ev, iframe, cursor, viewportLabel, wrap);
+        dispatch(ev);
       }
       // Set next event index to the first event after currentT.
       eventIdx = snapIdx + 1;
@@ -299,7 +400,7 @@ export function mountReplay(host: HTMLElement, bundle: CaptureBundle): void {
     currentT = Math.min(timelineAtPlay + (wallNow - wallStart), duration);
 
     while (eventIdx < events.length && events[eventIdx]!.t <= currentT) {
-      applyEvent(events[eventIdx]!, iframe, cursor, viewportLabel, wrap);
+      dispatch(events[eventIdx]!);
       eventIdx++;
     }
 

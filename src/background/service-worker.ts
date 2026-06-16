@@ -4,6 +4,7 @@ import type {
   WorkerMessage,
   WorkerResponse,
   IntegrationId,
+  TriageFields,
 } from '@shared/messaging';
 import { CaptureBundle } from '@shared/types';
 import { bundleDb } from '../content/db';
@@ -14,12 +15,61 @@ import { analyzeBundle, analyzeBundleStream, getAiConfig, chat, generatePlaywrig
 import { generatePlaywrightTest } from '../testgen/playwright';
 import { findDuplicates } from '../ai/duplicates';
 import { setExtraRedactionPatterns } from '@shared/redact';
-import { absolutizeCss } from '@shared/css-util';
+import { absolutizeCss, findFontUrls, fontMimeFor, inlineFontUrls } from '@shared/css-util';
 
 // Cap on cross-origin CSS we inline per capture, mirroring the in-page budget
 // (MAX_INLINE_CSS in dom-recorder.ts — keep in sync).
 const MAX_XORIGIN_CSS = 3_000_000;
 const CSS_FETCH_TIMEOUT_MS = 4000;
+// Cross-origin web fonts inlined as data: URIs (CORS-free in the replay iframe).
+// Bounded so a font-heavy page can't bloat the stored bundle past the DB quota.
+const MAX_FONTS = 16;
+const MAX_FONT_BYTES = 1_500_000;
+
+// btoa works on binary strings only; chunk to avoid blowing the call stack on
+// large font buffers (String.fromCharCode(...bigArray) overflows).
+function base64FromBuffer(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+// Inline cross-origin @font-face sources referenced across the fetched sheets
+// as data: URIs, rewriting the css map in place. Sequential + budgeted so the
+// total stays bounded; every failure leaves the absolute url() untouched.
+async function inlineFonts(cssByHref: Record<string, string>): Promise<void> {
+  const urls = new Set<string>();
+  for (const css of Object.values(cssByHref)) {
+    for (const u of findFontUrls(css)) urls.add(u);
+  }
+  if (urls.size === 0) return;
+
+  const dataByUrl = new Map<string, string>();
+  let total = 0;
+  for (const url of [...urls].slice(0, MAX_FONTS)) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), CSS_FETCH_TIMEOUT_MS);
+      const res = await fetch(url, { credentials: 'include', signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const buf = await res.arrayBuffer();
+      if (total + buf.byteLength > MAX_FONT_BYTES) continue;
+      total += buf.byteLength;
+      dataByUrl.set(url, `data:${fontMimeFor(url)};base64,${base64FromBuffer(buf)}`);
+    } catch {
+      // CORS-after-all, network error, abort — leave the absolute url() in place.
+    }
+  }
+  if (dataByUrl.size === 0) return;
+  for (const href of Object.keys(cssByHref)) {
+    cssByHref[href] = inlineFontUrls(cssByHref[href]!, dataByUrl);
+  }
+}
 
 // Ephemeral by design — holds NO capture state (PRD §8). Every handler reads
 // from / writes to the durable IndexedDB store or chrome.storage and returns.
@@ -64,6 +114,9 @@ async function fetchCrossOriginCss(
     }
   });
   await Promise.allSettled(work);
+  // Cross-origin fonts won't load from absolute URLs in the replay iframe (CORS),
+  // so inline them as data: URIs. Best-effort; never fails the CSS response.
+  await inlineFonts(css);
   return { type: 'css:fetched', ok: true, css };
 }
 
@@ -118,12 +171,27 @@ async function handle(
       const bundle = await bundleDb.get(message.id);
       if (!bundle) return { ok: false, error: 'Bundle not found' };
       bundle.steps = message.steps;
+      // Persist an edited title alongside the steps — otherwise filed tickets
+      // and LLM test-gen keep using the stale capture-time title.
+      if (message.title) bundle.title = message.title;
       await bundleDb.put(bundle);
       return { ok: true };
     }
 
     case 'bundle:file':
-      return fileBundle(message.id, message.redact, message.integration);
+      return fileBundle(message.id, message.redact, message.integration, message.fields);
+
+    case 'frame:event': {
+      // Relay a sub-frame's capture event to the tab's top frame (frameId 0),
+      // where the buffer-owning content script lives. Fire-and-forget: the
+      // worker does no buffering, and a missing top-frame listener (e.g. a
+      // mid-navigation race) must not fail the sender.
+      const tabId = sender.tab?.id;
+      if (tabId !== undefined) {
+        void chrome.tabs.sendMessage(tabId, message, { frameId: 0 }).catch(() => {});
+      }
+      return { ok: true };
+    }
 
     case 'integration:test':
       return testIntegration(message.id);
@@ -235,20 +303,26 @@ async function fileBundle(
   id: string,
   redact: boolean,
   integrationId: IntegrationId,
+  fields?: TriageFields,
 ): Promise<RuntimeResponse> {
   const stored = await bundleDb.get(id);
   if (!stored) return { ok: false, error: 'Bundle not found' };
   if (redact) await primeRedaction();
   const bundle = redact ? redactBundle(stored) : stored;
 
-  const result = await getIntegration(integrationId).file(bundle);
-  bundle.filed = {
-    integration: result.integration,
-    identifier: result.identifier,
-    url: result.url,
-    at: Date.now(),
-  };
-  await bundleDb.put(bundle); // persist redaction + filed metadata
+  const result = await getIntegration(integrationId).file(bundle, fields);
+  // A simulated ref (integration not configured) is demo output, not a real
+  // filing — persisting it would make the dashboard show the bug as genuinely
+  // filed. The UI still gets the simulated result to render.
+  if (!result.simulated) {
+    bundle.filed = {
+      integration: result.integration,
+      identifier: result.identifier,
+      url: result.url,
+      at: Date.now(),
+    };
+  }
+  await bundleDb.put(bundle); // persist redaction (+ filed metadata when real)
   return { ok: true, filed: result };
 }
 
@@ -341,6 +415,15 @@ async function primeRedaction(): Promise<void> {
 chrome.runtime.onConnect.addListener((port) => {
   if (!port.name.startsWith('ai:analyze:')) return;
   const id = port.name.slice('ai:analyze:'.length);
+  // The review tab can close mid-stream. postMessage on a dead port THROWS —
+  // unguarded, that rejected analyzeBundleStream before the (already billed)
+  // analysis was persisted, and the catch then posted to the same dead port,
+  // escaping the void-async as an unhandled rejection. So: track disconnect,
+  // let the stream FINISH and persist, and guard every port call.
+  let disconnected = false;
+  port.onDisconnect.addListener(() => {
+    disconnected = true;
+  });
   void (async () => {
     try {
       const cfg = await getAiConfig();
@@ -350,16 +433,42 @@ chrome.runtime.onConnect.addListener((port) => {
       // Prime user-defined redaction patterns (F7) before the bundle leaves the
       // browser — parity with analyzeWithAi/findDupes (was missing here).
       await primeRedaction();
-      const analysis = await analyzeBundleStream(redactBundle(stored), cfg, (delta) =>
-        port.postMessage({ type: 'delta', delta }),
-      );
+      const analysis = await analyzeBundleStream(redactBundle(stored), cfg, (delta) => {
+        if (disconnected) return;
+        try {
+          port.postMessage({ type: 'delta', delta });
+        } catch {
+          // Port died between the disconnect event and this delta — stop
+          // posting but keep streaming so the result is still persisted.
+          disconnected = true;
+        }
+      });
       stored.aiAnalysis = analysis;
       await bundleDb.put(stored);
-      port.postMessage({ type: 'done', analysis });
+      if (!disconnected) {
+        try {
+          port.postMessage({ type: 'done', analysis });
+        } catch {
+          // receiver gone — the analysis is persisted, nothing else to do
+        }
+      }
     } catch (err) {
-      port.postMessage({ type: 'error', error: err instanceof Error ? err.message : String(err) });
+      if (!disconnected) {
+        try {
+          port.postMessage({
+            type: 'error',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        } catch {
+          // receiver gone — nowhere to report
+        }
+      }
     } finally {
-      port.disconnect();
+      try {
+        port.disconnect();
+      } catch {
+        // already disconnected
+      }
     }
   })();
 });

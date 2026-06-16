@@ -48,9 +48,16 @@ export function serializeArg(arg: unknown): string {
   }
 }
 
+// Guard against double-install (script may be re-evaluated by the page):
+// wrapping twice would stack wrappers and forward every log to the bridge twice.
+let installed = false;
+
 // Wrap console.* without breaking the page's own logging. We forward a copy
 // to the bridge, then call the original so devtools behaves normally.
 export function installConsoleHook(): void {
+  if (installed) return;
+  installed = true;
+
   for (const level of LEVELS) {
     const original = console[level].bind(console);
     console[level] = (...args: unknown[]) => {

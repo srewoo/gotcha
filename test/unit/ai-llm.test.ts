@@ -73,7 +73,7 @@ describe('llm — analyzeBundle per provider', () => {
   const cases: Array<[AiConfig['provider'], unknown, Record<string, unknown>]> = [
     ['openai', { choices: [{ message: { content: ANALYSIS_JSON } }] }, { Authorization: 'Bearer k' }],
     ['anthropic', { content: [{ text: ANALYSIS_JSON }] }, { 'x-api-key': 'k' }],
-    ['gemini', { candidates: [{ content: { parts: [{ text: ANALYSIS_JSON }] } }] }, {}],
+    ['gemini', { candidates: [{ content: { parts: [{ text: ANALYSIS_JSON }] } }] }, { 'x-goog-api-key': 'k' }],
   ];
 
   for (const [provider, body, expectHeaders] of cases) {
@@ -99,6 +99,22 @@ describe('llm — analyzeBundle per provider', () => {
       if (provider === 'gemini') expect(sentUrl).toContain('generativelanguage.googleapis.com');
     });
   }
+
+  it('should keep the Gemini API key out of the URL and encode the model path segment', async () => {
+    let sentUrl = '';
+    let sentHeaders: Record<string, string> = {};
+    mockFetch((url, init) => {
+      sentUrl = url;
+      sentHeaders = (init?.headers as Record<string, string>) ?? {};
+      return { body: { candidates: [{ content: { parts: [{ text: ANALYSIS_JSON }] } }] } };
+    });
+    await analyzeBundle(makeBundle(), { provider: 'gemini', apiKey: 'sekret', model: 'tuned models/x' });
+    // Keys in query strings leak into logs/HARs — header only.
+    expect(sentUrl).not.toContain('key=');
+    expect(sentUrl).not.toContain('sekret');
+    expect(sentHeaders['x-goog-api-key']).toBe('sekret');
+    expect(sentUrl).toContain('tuned%20models%2Fx');
+  });
 
   it('throws a helpful error on non-200', async () => {
     mockFetch(() => ({ status: 429, text: 'rate limited' }));

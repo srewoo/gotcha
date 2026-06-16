@@ -1,6 +1,9 @@
 import type { CaptureBundle } from '@shared/types';
+import type { TriageFields } from '@shared/messaging';
 
 export type IntegrationId = 'linear' | 'jira' | 'github' | 'slack';
+
+export type { TriageFields };
 
 export interface FileResult {
   integration: IntegrationId;
@@ -19,7 +22,8 @@ export interface Integration {
   readonly name: string;
   // Files the bundle and returns a reference. Implementations simulate a
   // reference when no credentials are configured, so the flow stays testable.
-  file(bundle: CaptureBundle): Promise<FileResult>;
+  // Optional triage fields are rendered into the issue body (see format.ts).
+  file(bundle: CaptureBundle, fields?: TriageFields): Promise<FileResult>;
   // Validates the configured credentials with a lightweight authenticated call.
   test(): Promise<TestResult>;
 }

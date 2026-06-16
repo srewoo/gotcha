@@ -1,8 +1,17 @@
 import type { CaptureBundle } from '@shared/types';
+import type { TriageFields } from '@shared/messaging';
 
 // Shared issue-body formatting reused by every integration so a filed bug looks
 // the same in Linear, Jira, or GitHub. Markdown — GitHub/Linear render it
-// natively; Jira's wiki renderer accepts a close-enough subset.
+// natively; Jira maps it to ADF (see jira.ts).
+
+// Output caps. Slack rejects oversized text outright (msg_too_long fails the
+// whole filing) and GitHub caps issue bodies at 65,536 chars — so a runaway
+// console error or giant generated test must never produce an unbounded body.
+const MAX_CONSOLE_MSG = 500;
+const MAX_TOTAL = 60_000;
+const TRUNCATION_MARKER = '… [truncated]';
+
 function fmtSteps(bundle: CaptureBundle): string {
   if (bundle.steps.length === 0) return '_No steps recorded._';
   return bundle.steps
@@ -25,10 +34,37 @@ function fmtNetwork(bundle: CaptureBundle): string {
 function fmtConsole(bundle: CaptureBundle): string {
   const errors = bundle.console.filter((c) => c.level === 'error');
   if (errors.length === 0) return '_No console errors._';
-  return errors.map((c) => `- \`${c.message}\``).join('\n');
+  return errors
+    .map((c) => {
+      // Cap each message — minified-stack errors can be hundreds of KB each.
+      const msg =
+        c.message.length > MAX_CONSOLE_MSG
+          ? `${c.message.slice(0, MAX_CONSOLE_MSG)}${TRUNCATION_MARKER}`
+          : c.message;
+      return `- \`${msg}\``;
+    })
+    .join('\n');
 }
 
-export function describeBundle(bundle: CaptureBundle): string {
+// Triage (team/assignee/priority) is rendered as body TEXT, not mapped to
+// tracker-native fields: native priority/assignee values that don't exist in
+// the target project/tracker cause 400s and kill the whole filing, whereas a
+// body line always lands.
+function fmtTriage(fields: TriageFields | undefined): string | null {
+  if (!fields) return null;
+  const parts = [
+    fields.team ? `team ${fields.team}` : null,
+    fields.assignee ? `assignee ${fields.assignee}` : null,
+    fields.priority ? `priority ${fields.priority}` : null,
+  ].filter((p): p is string => p !== null);
+  return parts.length > 0 ? `**Triage:** ${parts.join(' · ')}` : null;
+}
+
+export interface DescribeOpts {
+  fields?: TriageFields | undefined;
+}
+
+export function describeBundle(bundle: CaptureBundle, opts?: DescribeOpts): string {
   const env = bundle.environment;
   const sections = [
     '## Reproduction steps',
@@ -45,6 +81,10 @@ export function describeBundle(bundle: CaptureBundle): string {
     `- Viewport ${env.viewport.width}×${env.viewport.height} · DPR ${env.dpr}`,
     `- ${env.locale} · ${env.url}`,
   ];
+  const triage = fmtTriage(opts?.fields);
+  if (triage) {
+    sections.push('', '## Triage', triage);
+  }
   if (bundle.aiAnalysis) {
     const a = bundle.aiAnalysis;
     sections.push(
@@ -69,5 +109,10 @@ export function describeBundle(bundle: CaptureBundle): string {
     );
   }
   sections.push('', `— filed by Gotcha · redaction ${bundle.redacted ? 'on' : 'off'}`);
-  return sections.join('\n');
+  const text = sections.join('\n');
+  // Total budget: the generated-test embed is kept but trimmed along with
+  // everything else past the cap, so the body always fits every tracker.
+  return text.length > MAX_TOTAL
+    ? `${text.slice(0, MAX_TOTAL)}\n${TRUNCATION_MARKER}`
+    : text;
 }

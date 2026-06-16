@@ -1,11 +1,21 @@
 import type { Environment } from '@shared/types';
 
 function parseBrowser(ua: string): string {
-  const m =
-    /(Edg|OPR|Chrome|Firefox|Safari)\/([\d.]+)/.exec(ua) ?? null;
-  if (!m) return 'Unknown';
-  const name = { Edg: 'Edge', OPR: 'Opera', Chrome: 'Chrome', Firefox: 'Firefox', Safari: 'Safari' }[m[1]] ?? m[1];
-  return `${name} ${m[2].split('.')[0]}`;
+  // Priority-ordered: real Edge/Opera UAs also contain a "Chrome/…" token (and
+  // Chrome UAs contain "Safari/…"), so a single leftmost-match alternation
+  // misreports them. Most-specific brand token wins.
+  const checks: ReadonlyArray<[string, RegExp]> = [
+    ['Edge', /Edg\/([\d.]+)/],
+    ['Opera', /OPR\/([\d.]+)/],
+    ['Chrome', /Chrome\/([\d.]+)/],
+    ['Firefox', /Firefox\/([\d.]+)/],
+    ['Safari', /Safari\/([\d.]+)/],
+  ];
+  for (const [name, re] of checks) {
+    const m = re.exec(ua);
+    if (m) return `${name} ${m[1]!.split('.')[0]}`;
+  }
+  return 'Unknown';
 }
 
 function parseOs(ua: string): string {

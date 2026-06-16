@@ -104,16 +104,75 @@ describe('service-worker — screenshot + css fetch', () => {
     expect(res.ok).toBe(true);
     expect(res.css['https://cdn/x.css']).toContain('color:red');
   });
+
+  it('should inline a cross-origin font as a data uri in the fetched css', async () => {
+    mockFetch((url) => {
+      if (url.endsWith('.woff2')) return { ok: true, bytes: new Uint8Array([1, 2, 3, 4]) };
+      return { ok: true, text: "@font-face{font-family:X;src:url('https://cdn/f.woff2')}" };
+    });
+    const res = await send({ type: 'css:fetch', sheets: [{ href: 'https://cdn/x.css' }] });
+    expect(res.ok).toBe(true);
+    const css = res.css['https://cdn/x.css']!;
+    expect(css).toContain('data:font/woff2;base64,');
+    expect(css).not.toContain("url('https://cdn/f.woff2')");
+  });
+
+  it('should leave the absolute font url when the font fetch fails', async () => {
+    mockFetch((url) => {
+      if (url.endsWith('.woff2')) return { ok: false, status: 403 };
+      return { ok: true, text: '@font-face{src:url(https://cdn/f.woff2)}' };
+    });
+    const res = await send({ type: 'css:fetch', sheets: [{ href: 'https://cdn/x.css' }] });
+    expect(res.css['https://cdn/x.css']).toContain('url(https://cdn/f.woff2)');
+    expect(res.css['https://cdn/x.css']).not.toContain('data:font');
+  });
 });
 
 describe('service-worker — filing', () => {
-  it('files a bundle (simulated, no creds) and records filed metadata', async () => {
+  it('should not persist filed metadata when the integration is unconfigured (simulated)', async () => {
     store.set('a', makeBundle({ id: 'a' }));
     const res = await send({ type: 'bundle:file', id: 'a', redact: true, integration: 'linear' });
     expect(res.ok).toBe(true);
+    // The simulated ref still flows back to the UI…
     expect(res.filed.simulated).toBe(true);
-    expect(store.get('a')!.filed?.integration).toBe('linear');
+    // …but is NOT recorded as a real filing on the bundle.
+    expect(store.get('a')!.filed).toBeUndefined();
     expect(store.get('a')!.redacted).toBe(true); // redact path applied
+  });
+
+  it('should persist filed metadata when the integration files for real', async () => {
+    storageLocal.set({ linearApiKey: 'key', linearTeamId: 'team' });
+    store.set('a', makeBundle({ id: 'a' }));
+    mockFetch(() => ({
+      body: { data: { issueCreate: { success: true, issue: { identifier: 'GOT-9', url: 'https://l/9' } } } },
+    }));
+    const res = await send({ type: 'bundle:file', id: 'a', redact: false, integration: 'linear' });
+    expect(res.ok).toBe(true);
+    expect(res.filed.simulated).toBe(false);
+    expect(store.get('a')!.filed).toMatchObject({ integration: 'linear', identifier: 'GOT-9' });
+  });
+
+  it('should render triage fields into the filed issue body when fields are sent', async () => {
+    storageLocal.set({ linearApiKey: 'key', linearTeamId: 'team' });
+    store.set('a', makeBundle({ id: 'a' }));
+    let sentBody = '';
+    mockFetch((_url, init) => {
+      sentBody = String(init?.body);
+      return {
+        body: { data: { issueCreate: { success: true, issue: { identifier: 'GOT-10', url: 'https://l/10' } } } },
+      };
+    });
+    const res = await send({
+      type: 'bundle:file',
+      id: 'a',
+      redact: false,
+      integration: 'linear',
+      fields: { team: 'Web', assignee: 'ana', priority: 'P1' },
+    });
+    expect(res.ok).toBe(true);
+    expect(sentBody).toContain('team Web');
+    expect(sentBody).toContain('assignee ana');
+    expect(sentBody).toContain('priority P1');
   });
 
   it('integration:test reports not-configured', async () => {
@@ -205,6 +264,7 @@ describe('service-worker — deep capture + streaming + unknown', () => {
       name: 'ai:analyze:a',
       postMessage: (m: { type: string }) => posted.push(m),
       disconnect: vi.fn(),
+      onDisconnect: { addListener: vi.fn() },
     };
     chromeApi.runtime.onConnect._emit(port);
     await new Promise((r) => setTimeout(r, 30));
@@ -300,7 +360,12 @@ describe('service-worker — AI test + duplicates + keyboard command', () => {
   it('streaming ai:analyze port errors cleanly without a key', async () => {
     store.set('a', makeBundle({ id: 'a' }));
     const posted: Array<{ type: string; error?: string }> = [];
-    const port = { name: 'ai:analyze:a', postMessage: (m: any) => posted.push(m), disconnect: () => {} };
+    const port = {
+      name: 'ai:analyze:a',
+      postMessage: (m: any) => posted.push(m),
+      disconnect: () => {},
+      onDisconnect: { addListener: () => {} },
+    };
     chromeApi.runtime.onConnect._emit(port);
     await new Promise((r) => setTimeout(r, 20));
     expect(posted.some((m) => m.type === 'error')).toBe(true);
@@ -309,5 +374,76 @@ describe('service-worker — AI test + duplicates + keyboard command', () => {
   it('ignores ports that are not ai:analyze:', () => {
     const port = { name: 'something-else', postMessage: () => {}, disconnect: () => {} };
     expect(() => chromeApi.runtime.onConnect._emit(port)).not.toThrow();
+  });
+
+  it('should still persist the analysis when the port disconnects mid-stream', async () => {
+    storageLocal.set({ aiApiKey: 'k' });
+    store.set('a', makeBundle({ id: 'a' }));
+    const enc = new TextEncoder();
+    const json = JSON.stringify({ summary: 'persisted', rootCauses: [], debuggingSteps: [] });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          body: new ReadableStream({
+            start(c) {
+              c.enqueue(enc.encode('data: ' + JSON.stringify({ choices: [{ delta: { content: json } }] }) + '\n'));
+              c.enqueue(enc.encode('data: [DONE]\n'));
+              c.close();
+            },
+          }),
+        } as unknown as Response),
+      ),
+    );
+    let onDisconnect: (() => void) | undefined;
+    const port = {
+      name: 'ai:analyze:a',
+      // A closed review tab makes every postMessage throw — the handler must
+      // swallow this, finish the stream, and persist the billed analysis.
+      postMessage: () => {
+        throw new Error('Attempting to use a disconnected port object');
+      },
+      disconnect: () => {
+        throw new Error('Attempting to use a disconnected port object');
+      },
+      onDisconnect: { addListener: (fn: () => void) => (onDisconnect = fn) },
+    };
+    chromeApi.runtime.onConnect._emit(port);
+    onDisconnect?.(); // review tab closes immediately after connecting
+    await new Promise((r) => setTimeout(r, 30));
+    expect(store.get('a')!.aiAnalysis?.summary).toBe('persisted');
+  });
+
+  it('should persist an edited title when bundle:setSteps carries one', async () => {
+    store.set('a', makeBundle({ id: 'a', title: 'Old title' }));
+    await send({
+      type: 'bundle:setSteps',
+      id: 'a',
+      steps: [{ id: 's', kind: 'click', label: 'x', ts: 1 }],
+      title: 'Edited title',
+    });
+    expect(store.get('a')!.title).toBe('Edited title');
+    expect(store.get('a')!.steps).toHaveLength(1);
+  });
+
+  it('should keep the existing title when bundle:setSteps has no title', async () => {
+    store.set('a', makeBundle({ id: 'a', title: 'Old title' }));
+    await send({ type: 'bundle:setSteps', id: 'a', steps: [] });
+    expect(store.get('a')!.title).toBe('Old title');
+  });
+
+  it('should relay frame:event to the sender tab top frame when a sub-frame sends it', async () => {
+    const message = { type: 'frame:event', payload: { kind: 'console' } };
+    const res = await send(message, { tab: { id: 7 } });
+    expect(res).toEqual({ ok: true });
+    expect(chromeApi.tabs.sendMessage).toHaveBeenCalledWith(7, message, { frameId: 0 });
+  });
+
+  it('should ack frame:event without relaying when the sender has no tab', async () => {
+    const res = await send({ type: 'frame:event', payload: {} }, {});
+    expect(res).toEqual({ ok: true });
+    expect(chromeApi.tabs.sendMessage).not.toHaveBeenCalled();
   });
 });

@@ -54,7 +54,7 @@ function buildScreenshotSection(b: CaptureBundle): string {
   return `
   <section id="screenshot">
     <h2>Screenshot</h2>
-    <img class="screenshot" src="${b.screenshotDataUrl}" alt="Screenshot at time of bug capture" />
+    <img class="screenshot" src="${esc(b.screenshotDataUrl)}" alt="Screenshot at time of bug capture" />
   </section>`;
 }
 
@@ -155,10 +155,12 @@ function buildReplaySection(events: ReplayEvent[]): string {
   if (events.length === 0) return '';
 
   // Embed the raw event array as JSON inside the script. JSON.stringify
-  // produces valid JS — the only injection risk is the literal </script> sequence,
-  // which we neutralise with a split+join below.
-  // Split </script> so the literal string cannot close the inline script block.
-  const eventsJson = JSON.stringify(events).replace(/<\/script>/gi, '<\\/script>');
+  // produces valid JS, but `<` sequences inside script text are still parsed
+  // by the HTML tokenizer: a literal </script> closes the block, and `<!--`
+  // followed by `<script` flips it into the double-escaped state — both
+  // attacker-influenceable via captured snapshot HTML. Escaping EVERY `<` as
+  // \\u003c (valid inside a JS string) closes the whole class.
+  const eventsJson = JSON.stringify(events).replace(/</g, '\\u003c');
 
   return `
   <section id="replay">
@@ -202,13 +204,17 @@ function buildReplaySection(events: ReplayEvent[]): string {
         counter.textContent = String(i);
         kindBadge.textContent = ev.kind;
 
-        if (ev.kind === 'snapshot' && ev.html) {
-          // Write the snapshot HTML into the sandboxed iframe.
+        if ((ev.kind === 'snapshot' || ev.kind === 'mutation') && ev.html) {
+          // Write the frame HTML into the sandboxed iframe. Mutation events
+          // carry full body-frame HTML by design — render them like snapshots,
+          // otherwise a long recording whose initial snapshot rolled out of
+          // the ring would show nothing at all.
           var doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
           if (doc) { doc.open(); doc.write(ev.html); doc.close(); }
           detail.textContent = '';
-        } else if (ev.kind === 'mutation' && ev.html) {
-          detail.textContent = 'Mutation on ' + (ev.selector || '(no selector)') + ': ' + ev.html.slice(0, 200);
+        } else if (ev.kind === 'mutation') {
+          // Text fallback for a mutation event captured without HTML.
+          detail.textContent = 'Mutation on ' + (ev.selector || '(no selector)');
         } else if (ev.kind === 'input') {
           detail.textContent = 'Input on ' + (ev.selector || '(no selector)') + ': ' + (ev.value || '');
         } else if (ev.kind === 'scroll') {
@@ -229,7 +235,13 @@ function buildReplaySection(events: ReplayEvent[]): string {
         if (idx < EVENTS.length - 1) { idx++; render(idx); }
       });
 
-      // Render the initial snapshot immediately on load.
+      // Render the first frame-bearing event immediately on load — on long
+      // recordings the initial snapshot may have rolled out of the ring, so
+      // start at the earliest event that can actually paint the iframe.
+      for (var i = 0; i < EVENTS.length; i++) {
+        var e0 = EVENTS[i];
+        if ((e0.kind === 'snapshot' || e0.kind === 'mutation') && e0.html) { idx = i; break; }
+      }
       render(idx);
     })();
     <\/script>

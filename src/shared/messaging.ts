@@ -9,6 +9,15 @@ import type {
 
 export type IntegrationId = 'linear' | 'jira' | 'github' | 'slack';
 
+// Optional triage chosen at file time (review page's Team/Assignee/Priority).
+// Rendered into the issue body by the integrations — see integrations/format.ts
+// for why they're body text rather than tracker-native fields.
+export interface TriageFields {
+  team?: string | undefined;
+  assignee?: string | undefined;
+  priority?: string | undefined;
+}
+
 // ─── content → service worker (extension-origin operations) ─────────────────
 // The content script cannot reach the extension-origin IndexedDB or
 // chrome.tabs.captureVisibleTab, so it delegates persistence + screenshot to
@@ -50,8 +59,16 @@ export type RuntimeMessage =
   | { type: 'bundle:delete'; id: string }
   | { type: 'bundle:attachTest'; id: string; filename: string; source: string }
   | { type: 'bundle:setScreenshot'; id: string; dataUrl: string }
-  | { type: 'bundle:setSteps'; id: string; steps: ReproStep[] }
-  | { type: 'bundle:file'; id: string; redact: boolean; integration: IntegrationId }
+  // `title` rides along so an edited title persists with the edited steps —
+  // filed tickets and LLM test-gen otherwise kept using the stale title.
+  | { type: 'bundle:setSteps'; id: string; steps: ReproStep[]; title?: string | undefined }
+  | {
+      type: 'bundle:file';
+      id: string;
+      redact: boolean;
+      integration: IntegrationId;
+      fields?: TriageFields | undefined;
+    }
   | { type: 'integration:test'; id: IntegrationId }
   | { type: 'deep:enable'; tabId?: number | undefined }
   | { type: 'deep:disable'; tabId?: number | undefined }
@@ -62,7 +79,12 @@ export type RuntimeMessage =
   | { type: 'ai:available' }
   | { type: 'ai:test' }
   // LLM-authored Playwright test (redacts first); falls back to deterministic.
-  | { type: 'ai:generateTest'; id: string };
+  | { type: 'ai:generateTest'; id: string }
+  // Sub-frame → top-frame capture relay. The worker just forwards the message
+  // to the sender tab's top frame (frameId 0) — no buffering. Replaces the old
+  // window.postMessage cross-frame relay, which sandboxed/cross-origin frames
+  // could not always reach.
+  | { type: 'frame:event'; payload: unknown };
 
 // Likely-duplicate match surfaced before filing (#3). Defined here (not in the
 // ai module) so shared stays dependency-free.
@@ -137,16 +159,9 @@ export function isControlMessage(data: unknown): data is ControlMessage {
   );
 }
 
-// ─── sub-frame → top-frame forwarding (issue #6: all_frames capture) ─────────
-// A sub-frame's content script wraps each bridge message and posts it to
-// window.top, where the top content script (the buffer owner) unwraps it.
-export const FRAME_FWD_MARKER = '__gotcha_frame_fwd__' as const;
-export type FrameForward = { marker: typeof FRAME_FWD_MARKER; payload: BridgeMessage };
-
-export function isFrameForward(data: unknown): data is FrameForward {
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    (data as { marker?: unknown }).marker === FRAME_FWD_MARKER
-  );
-}
+// Sub-frame → top-frame forwarding no longer rides on window.postMessage (which
+// exposed an injection/leak surface to the host page and untrusted iframes). A
+// sub-frame's content script now relays each bridge message to the worker via
+// chrome.runtime ({ type: 'frame:event' }), which fans it back to the top frame
+// with chrome.tabs.sendMessage(..., { frameId: 0 }) — page-invisible and
+// authenticated by Chrome's own sender identity.

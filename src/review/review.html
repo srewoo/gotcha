@@ -50,9 +50,14 @@
                   <button class="anno-tool active" data-tool="box" title="Box">▢</button>
                   <button class="anno-tool" data-tool="arrow" title="Arrow">↗</button>
                   <button class="anno-tool" data-tool="blur" title="Blur">🌫️</button>
+                  <button class="anno-tool" data-tool="pin" title="Comment pin">📍</button>
                   <button class="anno-tool" data-tool="undo" title="Undo">↶</button>
+                  <span class="anno-sep" aria-hidden="true"></span>
+                  <button class="anno-tool" id="shot-min" title="Minimize">–</button>
+                  <button class="anno-tool" id="shot-max" title="View full screen">⛶</button>
                 </span></h4>
                 <div class="shot" id="shot"></div>
+                <ul class="shot-comments" id="shot-comments" hidden></ul>
               </div>
               <div class="sect" id="screencast-sect" hidden>
                 <h4>Screencast (true-pixel video) <span class="count" id="screencast-count"></span></h4>

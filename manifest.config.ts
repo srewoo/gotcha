@@ -7,7 +7,7 @@ import { defineManifest } from '@crxjs/vite-plugin';
 export default defineManifest({
   manifest_version: 3,
   name: 'Gotcha',
-  version: '1.1',
+  version: '1.2',
   description: 'One-click bug report that ships with a runnable regression test.',
   action: {
     default_popup: 'src/popup/popup.html',
@@ -60,13 +60,14 @@ export default defineManifest({
   // redundant over-request. 'scripting' powers on-demand re-injection of the
   // content scripts into tabs that predate the extension load (see
   // ensureContentScript in popup.ts).
-  permissions: ['scripting', 'storage', 'tabs'],
   // 'debugger' powers opt-in deep-capture mode (full response bodies +
-  // pre-injection requests + CDP screencast). It's an OPTIONAL permission,
-  // requested at runtime only when the user turns on Deep capture — so the
-  // install-time prompt (and Web Store review) doesn't carry the alarming
-  // "debug your browser" grant for users who never enable it.
-  optional_permissions: ['debugger'],
+  // pre-injection requests + CDP screencast). Chrome forbids 'debugger' in
+  // optional_permissions ("cannot be listed as optional" — it gets silently
+  // omitted), so it MUST be a required permission, granted at install. Deep
+  // capture stays opt-in at runtime (off until the user toggles it on); the
+  // grant just has to be present up front. The install prompt is already broad
+  // because of <all_urls> + tabs, so the incremental ask is small.
+  permissions: ['scripting', 'storage', 'tabs', 'debugger'],
   // <all_urls> already covers integration endpoints (Linear/Jira/GitHub/Slack
   // webhooks) for the worker's fetch calls.
   host_permissions: ['<all_urls>'],

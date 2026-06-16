@@ -207,17 +207,9 @@ $('deep').addEventListener('change', async (ev) => {
     $('sub').textContent = 'Deep capture needs a regular web page (not a chrome:// or extension page).';
     return;
   }
-  // 'debugger' is an optional permission — request it at the moment the user
-  // opts in (this click is the required user gesture). Without it the worker's
-  // chrome.debugger.attach would fail.
-  if (on) {
-    const granted = await chrome.permissions.request({ permissions: ['debugger'] });
-    if (!granted) {
-      box.checked = false;
-      $('sub').textContent = 'Deep capture needs the “debugger” permission — not granted.';
-      return;
-    }
-  }
+  // 'debugger' is a REQUIRED permission (Chrome forbids listing it as optional,
+  // so it can't be requested at runtime — it's granted at install). The toggle
+  // just attaches/detaches; chrome.debugger is always available.
   const res = await toWorker(
     on ? { type: 'deep:enable', tabId: tab?.id } : { type: 'deep:disable', tabId: tab?.id },
   );

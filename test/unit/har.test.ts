@@ -63,4 +63,58 @@ describe('buildHar', () => {
     const har = JSON.parse(buildHar(bundle([]), { redact: false }).json);
     expect(har.log.entries).toEqual([]);
   });
+
+  it('should resolve mimeType case-insensitively when headers use raw CDP casing', () => {
+    const out = buildHar(
+      bundle([
+        {
+          id: 'n1', url: 'https://api/x', method: 'GET', status: 200, durationMs: 2, failed: false,
+          ts: 1700000000001,
+          // Deep-capture stores raw CDP casing — must not fall back to text/plain.
+          responseHeaders: { 'Content-Type': 'application/json; charset=utf-8' },
+          responseBody: '{"a":1}',
+        },
+      ]),
+      { redact: false },
+    );
+    const har = JSON.parse(out.json);
+    expect(har.log.entries[0].response.content.mimeType).toBe('application/json; charset=utf-8');
+  });
+
+  it('should fall back to text/plain when no content-type header exists', () => {
+    const out = buildHar(
+      bundle([
+        { id: 'n1', url: 'https://api/x', method: 'GET', status: 200, durationMs: 2, failed: false, ts: 1700000000001 },
+      ]),
+      { redact: false },
+    );
+    const har = JSON.parse(out.json);
+    expect(har.log.entries[0].response.content.mimeType).toBe('text/plain');
+  });
+
+  it('should set page startedDateTime to the earliest entry ts when entries exist', () => {
+    // createdAt (1700000000000 in the fixture) is the capture FINISH time; the
+    // page must start at the earliest request so viewers never show negative
+    // waterfall offsets.
+    const out = buildHar(
+      bundle([
+        { id: 'n2', url: 'https://api/late', method: 'GET', status: 200, durationMs: 1, failed: false, ts: 1700000000900 },
+        { id: 'n1', url: 'https://api/early', method: 'GET', status: 200, durationMs: 1, failed: false, ts: 1700000000005 },
+      ]),
+      { redact: false },
+    );
+    const har = JSON.parse(out.json);
+    expect(har.log.pages[0].startedDateTime).toBe(new Date(1700000000005).toISOString());
+    // No entry may start before the page itself.
+    for (const e of har.log.entries) {
+      expect(Date.parse(e.startedDateTime)).toBeGreaterThanOrEqual(
+        Date.parse(har.log.pages[0].startedDateTime),
+      );
+    }
+  });
+
+  it('should fall back to createdAt for page startedDateTime when there are no entries', () => {
+    const har = JSON.parse(buildHar(bundle([]), { redact: false }).json);
+    expect(har.log.pages[0].startedDateTime).toBe(new Date(1700000000000).toISOString());
+  });
 });

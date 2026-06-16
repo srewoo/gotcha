@@ -118,7 +118,10 @@ export { local as storageLocal, session as storageSession };
 
 // Helper: stub global fetch with a sequence or a responder.
 export function mockFetch(
-  responder: (url: string, init?: RequestInit) => { ok?: boolean; status?: number; body?: unknown; text?: string },
+  responder: (
+    url: string,
+    init?: RequestInit,
+  ) => { ok?: boolean; status?: number; body?: unknown; text?: string; bytes?: Uint8Array },
 ): void {
   vi.stubGlobal(
     'fetch',
@@ -130,6 +133,12 @@ export function mockFetch(
         status,
         json: () => Promise.resolve(r.body ?? {}),
         text: () => Promise.resolve(r.text ?? (typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? ''))),
+        // arrayBuffer() backs the worker's font-inlining path; derive from
+        // explicit bytes, else from text/body so existing responders still work.
+        arrayBuffer: () =>
+          Promise.resolve(
+            (r.bytes ?? new TextEncoder().encode(r.text ?? (typeof r.body === 'string' ? r.body : ''))).buffer,
+          ),
         body: null,
       } as unknown as Response);
     }),

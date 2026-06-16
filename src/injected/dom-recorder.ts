@@ -6,7 +6,10 @@
 //  - Mutations: a MutationObserver coalesces mutation records; at most once
 //    every MUTATION_THROTTLE_MS it emits a fresh body snapshot. This is
 //    deliberately simpler than a patch-based approach — correctness and event
-//    volume matter more than byte-perfect diffs at this stage.
+//    volume matter more than byte-perfect diffs at this stage. The observer is
+//    attached to the document AND to every shadow root (open + closed) so DOM
+//    changes inside web components trigger snapshots and replay faithfully —
+//    without this, component internals freeze at their first captured frame.
 //  - Scroll / resize / mouse: throttled window listeners.
 //  - Input: 'input' and 'change' events with value masking for sensitive fields.
 //
@@ -19,7 +22,7 @@ import { BRIDGE_MARKER, post } from './bridge';
 import { isControlMessage } from '@shared/messaging';
 import { KEYFRAME_INTERVAL_MS } from '@shared/capture-config';
 import { absolutizeCss } from '@shared/css-util';
-import { closedRootFor } from './shadow-registry';
+import { closedRootFor, connectedShadowRoots, onShadowRoot } from './shadow-registry';
 import type { ReplayEvent } from '@shared/types';
 
 // Throttle intervals (ms).
@@ -304,10 +307,31 @@ let enabled = false;
 let epoch = 0;
 let pendingMutation = false;
 let observer: MutationObserver | null = null;
+let unsubscribeShadow: (() => void) | null = null;
 // When always-on (Instant Replay), a recurring timer emits styled keyframe
 // snapshots so any trailing slice has a recent, seedable frame to start from.
 let keyframeTimer: ReturnType<typeof setInterval> | null = null;
 const rel = (): number => Date.now() - epoch;
+
+const OBSERVE_OPTS = {
+  childList: true,
+  attributes: true,
+  characterData: true,
+  subtree: true,
+} as const;
+
+// A MutationObserver on the document does NOT see inside shadow roots, so we
+// attach the SAME observer to every shadow root too — open and closed. This is
+// what makes component-internal updates (the common case in web-component /
+// micro-frontend apps) replay faithfully instead of freezing at the first frame.
+function observeShadowRoot(root: ShadowRoot): void {
+  if (!observer) return;
+  try {
+    observer.observe(root, OBSERVE_OPTS);
+  } catch {
+    // Already-observed roots or detached nodes — ignore.
+  }
+}
 
 function startObserver(): void {
   if (!observer) {
@@ -316,9 +340,18 @@ function startObserver(): void {
       scheduleFlush();
     });
   }
-  const opts = { childList: true, attributes: true, characterData: true, subtree: true } as const;
-  if (document.body) observer.observe(document.documentElement, opts);
-  else document.addEventListener('DOMContentLoaded', () => observer?.observe(document.documentElement, opts), { once: true });
+  const observeAll = (): void => {
+    observer?.observe(document.documentElement, OBSERVE_OPTS);
+    for (const root of connectedShadowRoots()) observeShadowRoot(root);
+  };
+  if (document.body) observeAll();
+  else document.addEventListener('DOMContentLoaded', observeAll, { once: true });
+  // Watch roots attached AFTER recording starts (lazily-rendered components).
+  if (!unsubscribeShadow) {
+    unsubscribeShadow = onShadowRoot((root) => {
+      if (enabled) observeShadowRoot(root);
+    });
+  }
 }
 
 const flushMutation = (): void => {
@@ -380,7 +413,9 @@ function enable(_alwaysOn = false): void {
 
 function disable(): void {
   enabled = false;
-  observer?.disconnect();
+  observer?.disconnect(); // drops document + all shadow-root observations at once
+  unsubscribeShadow?.();
+  unsubscribeShadow = null;
   if (keyframeTimer !== null) {
     clearInterval(keyframeTimer);
     keyframeTimer = null;

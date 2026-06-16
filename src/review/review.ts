@@ -46,8 +46,9 @@ async function generateTest(id: string, b: CaptureBundle): Promise<void> {
   // Reflect the edited title before slugging the test name.
   b.title = $<HTMLInputElement>('title').value || b.title;
   // Persist edits (title/steps) so the worker reads the current bundle when the
-  // LLM authors the spec.
-  await chrome.runtime.sendMessage({ type: 'bundle:setSteps', id, steps: b.steps });
+  // LLM authors the spec. Title rides along — without it the worker re-reads
+  // the stored bundle and names the spec after the stale auto-title.
+  await chrome.runtime.sendMessage({ type: 'bundle:setSteps', id, steps: b.steps, title: b.title });
 
   let test: GeneratedTest | null = null;
 
@@ -101,11 +102,20 @@ function download(filename: string, content: string, mime: string): void {
 
 // Editable / deletable repro steps (feature F3). Mutates bundle.steps in place
 // (so test-gen + filing use the edits) and persists to the stored bundle.
+// Also owns title persistence: the worker's fileBundle / generateAiTest re-read
+// the STORED bundle, so an edited title must reach storage, not just the DOM.
 function setupSteps(id: string, b: CaptureBundle): void {
   const root = $('steps');
   const persist = (): void => {
-    void chrome.runtime.sendMessage({ type: 'bundle:setSteps', id, steps: b.steps });
+    void chrome.runtime.sendMessage({ type: 'bundle:setSteps', id, steps: b.steps, title: b.title });
   };
+  // The title input had no edit handler at all — edits only lived in the DOM
+  // until some other action happened to read .value. Persist on change/blur.
+  const titleInput = $<HTMLInputElement>('title');
+  titleInput.addEventListener('change', () => {
+    b.title = titleInput.value || b.title;
+    persist();
+  });
   const render = (): void => {
     $('steps-count').textContent = `${b.steps.length} recorded`;
     if (b.steps.length === 0) {
@@ -397,19 +407,60 @@ function initScreenshot(b: CaptureBundle): void {
   const maxWidth = Math.max(280, shot.clientWidth || 380);
   annotator = new Annotator(canvas, b.screenshotDataUrl, maxWidth);
 
+  const commentList = $('shot-comments');
+  const refreshComments = (): void => {
+    const comments = annotator?.comments() ?? [];
+    if (comments.length === 0) {
+      commentList.hidden = true;
+      commentList.innerHTML = '';
+      return;
+    }
+    commentList.hidden = false;
+    commentList.innerHTML = comments.map((c) => `<li>${esc(c)}</li>`).join('');
+  };
+
   const tools = $('shot-tools');
   tools.hidden = false;
-  tools.querySelectorAll<HTMLButtonElement>('.anno-tool').forEach((btn) => {
+  tools.querySelectorAll<HTMLButtonElement>('.anno-tool[data-tool]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const tool = btn.dataset.tool;
       if (tool === 'undo') {
         annotator?.undo();
+        refreshComments();
         return;
       }
-      tools.querySelectorAll('.anno-tool').forEach((b2) => b2.classList.remove('active'));
+      tools
+        .querySelectorAll('.anno-tool[data-tool]')
+        .forEach((b2) => b2.classList.remove('active'));
       btn.classList.add('active');
       annotator?.setTool(tool as Tool);
     });
+  });
+  // Keep the comment list in sync after a pin's editor commits (pointerup on the
+  // canvas fires before the input blur, so refresh on focus leaving the canvas).
+  canvas.addEventListener('pointerup', () => setTimeout(refreshComments, 0));
+  shot.addEventListener('focusout', () => setTimeout(refreshComments, 0));
+
+  // Full-screen / minimize controls (the screenshot can be large; let reviewers
+  // blow it up to inspect a defect, or collapse it to scan the rest of the card).
+  const setMax = (on: boolean): void => {
+    shot.classList.toggle('shot--max', on);
+    shot.classList.remove('shot--min');
+    document.body.classList.toggle('shot-maxed', on);
+    const maxBtn = $<HTMLButtonElement>('shot-max');
+    maxBtn.textContent = on ? '🗗' : '⛶';
+    maxBtn.title = on ? 'Exit full screen' : 'View full screen';
+  };
+  $('shot-max').addEventListener('click', () => setMax(!shot.classList.contains('shot--max')));
+  $('shot-min').addEventListener('click', () => {
+    if (shot.classList.contains('shot--max')) setMax(false);
+    shot.classList.toggle('shot--min');
+    $<HTMLButtonElement>('shot-min').title = shot.classList.contains('shot--min')
+      ? 'Restore'
+      : 'Minimize';
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && shot.classList.contains('shot--max')) setMax(false);
   });
 }
 
@@ -475,11 +526,32 @@ async function file(id: string, bundle: CaptureBundle): Promise<void> {
     });
   }
 
+  // Team / Assignee / Priority were dead UI: read, trimmed, and forwarded so
+  // the worker can plumb them into the integration payload. Empty inputs are
+  // omitted (and `fields` entirely when all are empty) so integrations can
+  // distinguish "not provided" from "".
+  const fieldValue = (fid: string): string | undefined => {
+    const v = (document.getElementById(fid) as HTMLInputElement | null)?.value.trim();
+    return v ? v : undefined;
+  };
+  const team = fieldValue('f-team');
+  const assignee = fieldValue('f-assignee');
+  const priority = fieldValue('f-priority');
+  const fields =
+    team || assignee || priority
+      ? {
+          ...(team ? { team } : {}),
+          ...(assignee ? { assignee } : {}),
+          ...(priority ? { priority } : {}),
+        }
+      : undefined;
+
   const res = (await chrome.runtime.sendMessage({
     type: 'bundle:file',
     id,
     redact,
     integration: chosen,
+    ...(fields ? { fields } : {}),
   })) as RuntimeResponse | undefined;
 
   if (!res || !res.ok || !('filed' in res)) {

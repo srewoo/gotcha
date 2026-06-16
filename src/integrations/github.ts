@@ -1,6 +1,12 @@
 import type { CaptureBundle } from '@shared/types';
 import { describeBundle } from './format';
-import { simulatedRef, type FileResult, type Integration, type TestResult } from './types';
+import {
+  simulatedRef,
+  type FileResult,
+  type Integration,
+  type TestResult,
+  type TriageFields,
+} from './types';
 
 // GitHub Issues (PRD v2). Needs a fine-grained PAT with Issues:write and a
 // "owner/repo" target in chrome.storage.local.
@@ -12,7 +18,7 @@ async function config(): Promise<{ token?: string; repo?: string }> {
 export const github: Integration = {
   id: 'github',
   name: 'GitHub',
-  async file(bundle: CaptureBundle): Promise<FileResult> {
+  async file(bundle: CaptureBundle, fields?: TriageFields): Promise<FileResult> {
     const { token, repo } = await config();
     if (!token || !repo) return simulatedRef('github');
 
@@ -23,7 +29,13 @@ export const github: Integration = {
         Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ title: bundle.title, body: describeBundle(bundle), labels: ['bug', 'gotcha'] }),
+      // Triage rides in the body text (see format.ts) — assigning a GitHub
+      // login that doesn't exist on the repo would 422 the whole filing.
+      body: JSON.stringify({
+        title: bundle.title,
+        body: describeBundle(bundle, { fields }),
+        labels: ['bug', 'gotcha'],
+      }),
     });
     if (!res.ok) throw new Error(`GitHub API ${res.status}`);
     const json = (await res.json()) as { number: number; html_url: string };

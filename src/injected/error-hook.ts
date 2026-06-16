@@ -1,9 +1,16 @@
 import { BRIDGE_MARKER, post } from './bridge';
 import { uid } from '@shared/uid';
 
+// Guard against double-install (script may be re-evaluated by the page) —
+// duplicate listeners would emit every error twice.
+let installed = false;
+
 // Uncaught errors and rejected promises never reach console.error reliably,
 // so we capture them directly. These are the highest-signal console entries.
 export function installErrorHook(): void {
+  if (installed) return;
+  installed = true;
+
   window.addEventListener('error', (event) => {
     post({
       marker: BRIDGE_MARKER,

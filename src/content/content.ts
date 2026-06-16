@@ -1,9 +1,4 @@
-import {
-  isBridgeMessage,
-  isFrameForward,
-  CONTROL_MARKER,
-  FRAME_FWD_MARKER,
-} from '@shared/messaging';
+import { isBridgeMessage, CONTROL_MARKER } from '@shared/messaging';
 import type {
   BridgeMessage,
   RuntimeMessage,
@@ -18,8 +13,10 @@ import { packageBundle } from './packager';
 import { CaptureWidget } from './widget';
 
 // ISOLATED-world content script. Runs in every frame (all_frames), but only the
-// TOP frame owns the buffers, widget, and capture lifecycle. Sub-frames forward
-// the events their MAIN-world hooks emit up to the top frame (issue #6).
+// TOP frame owns the buffers, widget, and capture lifecycle. Sub-frames relay
+// the events their MAIN-world hooks emit to the top frame through the worker
+// ('frame:event' over chrome.runtime — page-invisible + sender-authenticated,
+// issue #6).
 const isTop = window === window.top;
 
 let paused = false; // widget pause/resume (feature F6)
@@ -98,15 +95,29 @@ function bufferBridge(data: BridgeMessage): void {
   if (widget.mounted) widget.update(buffers.status());
 }
 
-// ─── MAIN world (this frame) + forwarded sub-frame events → buffers ──────────
+// ─── MAIN world (this frame) → buffers (top) or runtime relay (sub-frame) ────
+// Sub-frame events reach the top frame via the extension runtime: the worker
+// receives 'frame:event' and re-delivers it to frameId 0. Unlike the old
+// window.postMessage('*') relay, this channel is invisible to page scripts
+// (a payment iframe's input values are never broadcast to the host page) and
+// Chrome authenticates the sender, so third-party iframes can't forge capture
+// events into the report. Same-frame MAIN-world spoofing via `event.source ===
+// window` remains inherent to the bridge design and is documented as such.
 window.addEventListener('message', (event) => {
-  if (event.source === window && isBridgeMessage(event.data)) {
-    if (isTop) bufferBridge(event.data);
-    else window.top?.postMessage({ marker: FRAME_FWD_MARKER, payload: event.data }, '*');
+  if (event.source !== window || !isBridgeMessage(event.data)) return;
+  if (isTop) {
+    bufferBridge(event.data);
     return;
   }
-  // Top frame: events forwarded up from a sub-frame.
-  if (isTop && isFrameForward(event.data)) bufferBridge(event.data.payload);
+  try {
+    // Extension context can be invalidated (e.g. on extension reload) — relay
+    // failures must never throw into the page.
+    void chrome.runtime
+      .sendMessage({ type: 'frame:event', payload: event.data })
+      .catch(() => {});
+  } catch {
+    // Invalidated context: chrome.runtime.sendMessage itself throws. Drop.
+  }
 });
 
 // Only the top frame talks to the popup/worker — sub-frames must not respond
@@ -123,6 +134,13 @@ if (isTop) {
 }
 
 async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
+  // Sub-frame capture events relayed by the worker (chrome.tabs.sendMessage →
+  // frameId 0). Validated as a real bridge payload before buffering — the
+  // runtime channel authenticates the sender, the guard validates the shape.
+  if (message.type === 'frame:event') {
+    if (isBridgeMessage(message.payload)) bufferBridge(message.payload);
+    return { ok: true };
+  }
   if (denied && (message.type === 'capture:start' || message.type === 'capture:finish')) {
     return { ok: false, error: 'Capture is disabled on this domain (Gotcha settings)' };
   }
@@ -204,7 +222,14 @@ async function enrichCrossOriginCss(bundle: CaptureBundle): Promise<void> {
 
     const css = Object.values(res.css).join('\n');
     if (!css) return;
-    seed.html = seed.html.replace('</head>', `<style data-gotcha-xorigin>${css}</style></head>`);
+    // packageBundle copies the replay ARRAY but the event objects are still
+    // owned by the live ring — write the enrichment to a clone in the bundle's
+    // array so packaging never mutates live buffer state.
+    const enriched = {
+      ...seed,
+      html: seed.html.replace('</head>', `<style data-gotcha-xorigin>${css}</style></head>`),
+    };
+    replay[replay.indexOf(seed)] = enriched;
   } catch {
     // Never let CSS enrichment block the capture.
   }

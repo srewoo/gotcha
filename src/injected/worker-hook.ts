@@ -141,38 +141,49 @@ const WORKER_SHIM = `
 `;
 
 // ---------------------------------------------------------------------------
-// Rewrite worker source: fetch original text, prepend shim, return blob URL.
-// Returns null if rewriting is not possible (cross-origin, fetch error, etc.).
+// Rewrite worker source SYNCHRONOUSLY: read the original text, prepend the shim,
+// and return a blob URL the page's worker is created from. Synchronous (blocking
+// XHR) is deliberate — Worker construction is synchronous from the page's view,
+// so we must produce the instrumented source before returning. This lets us hand
+// the page a SINGLE instrumented worker (no second capture worker, no
+// double-firing of the worker's own network side-effects). Returns null if
+// rewriting isn't possible (cross-origin, read error) — the caller then falls
+// back to the unmodified native worker so creation never breaks.
+//
+// Worker scripts are same-origin/blob and typically small + HTTP-cached, so the
+// blocking read is cheap. We use the captured native XHR (grabbed at install,
+// before any wrapping) so this internal read is never itself recorded as a
+// captured network request.
 // ---------------------------------------------------------------------------
-async function buildShimmedBlobUrl(originalUrl: string): Promise<string | null> {
-  try {
-    // Only attempt for same-origin URLs. If parsing fails, bail out.
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(originalUrl, location.href);
-    } catch {
-      return null;
-    }
-    // Cross-origin: cannot fetch and rewrite safely.
-    if (parsedUrl.origin !== location.origin) return null;
+let NativeXHR: typeof XMLHttpRequest | undefined;
 
-    const res = await fetch(originalUrl, { credentials: 'same-origin' });
-    if (!res.ok) return null;
-    const originalSource = await res.text();
-    const shimmedSource = WORKER_SHIM + '\n' + originalSource;
-    const blob = new Blob([shimmedSource], { type: 'application/javascript' });
-    return URL.createObjectURL(blob);
+function readSourceSync(url: string): string | null {
+  try {
+    const XHR = NativeXHR ?? XMLHttpRequest;
+    const xhr = new XHR();
+    xhr.open('GET', url, false); // synchronous
+    xhr.send();
+    if (xhr.status !== 0 && (xhr.status < 200 || xhr.status >= 300)) return null;
+    return typeof xhr.responseText === 'string' ? xhr.responseText : null;
   } catch {
     return null;
   }
 }
 
-// Rewrite a blob: URL worker by reading the blob content and prepending shim.
-async function buildShimmedBlobFromBlob(blobUrl: string): Promise<string | null> {
+function buildShimmedBlobUrlSync(originalUrl: string, isBlobUrl: boolean): string | null {
   try {
-    const res = await fetch(blobUrl);
-    if (!res.ok) return null;
-    const originalSource = await res.text();
+    if (!isBlobUrl) {
+      // Only attempt for same-origin http(s) URLs.
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(originalUrl, location.href);
+      } catch {
+        return null;
+      }
+      if (parsedUrl.origin !== location.origin) return null;
+    }
+    const originalSource = readSourceSync(originalUrl);
+    if (originalSource == null) return null;
     const shimmedSource = WORKER_SHIM + '\n' + originalSource;
     const blob = new Blob([shimmedSource], { type: 'application/javascript' });
     return URL.createObjectURL(blob);
@@ -203,46 +214,38 @@ export function installWorkerHook(): void {
   if (installed) return;
   installed = true;
 
-  // DISABLED BY DEFAULT (safety). The shadow-worker strategy below re-runs the
-  // worker script in a second worker, which DOUBLE-FIRES any network calls or
-  // other top-level side-effects the worker performs — a real change to the
-  // host app's behaviour, not just our view of it. Worker requests are captured
-  // correctly and without double-execution by deep-capture (CDP) mode, so we
-  // leave this off rather than risk duplicate writes/analytics on a live app.
-  // The implementation is retained below for a future opt-in reimplementation.
-  return;
-
+  // ENABLED BY DEFAULT. The shim only relays fetch TIMINGS back to the main
+  // thread; it does not re-run the worker for its own sake. We rewrite the
+  // worker's OWN source (prepending the shim) and hand that single rewritten
+  // worker to the page, so there is no second execution and therefore no
+  // double-firing of the worker's network side-effects — the page runs exactly
+  // one worker, just an instrumented one. Cross-origin workers we cannot rewrite
+  // fall through to the native constructor unchanged (capture silently skipped).
+  // Deep-capture (CDP) remains the highest-fidelity path; this gives baseline
+  // worker network visibility without it.
   if (typeof Worker === 'undefined') return;
 
   const NativeWorker = Worker;
+  // Grab the native XHR before any other hook can wrap it, so our internal
+  // synchronous source read is never recorded as a captured network request.
+  if (typeof XMLHttpRequest !== 'undefined') NativeXHR = XMLHttpRequest;
 
-  // We wrap the Worker constructor using a function (not a class extension)
-  // so we can intercept the scriptURL before the native constructor runs,
-  // rewrite it asynchronously, then create the real worker. Because Worker
-  // creation is synchronous from the page's perspective but shimming requires
-  // an async fetch, we use the following strategy:
+  // We wrap the Worker constructor using a function (not a class extension) so
+  // we can intercept the scriptURL before the native constructor runs and
+  // synchronously rewrite it. Strategy:
   //
-  //   1. Create the worker immediately with the ORIGINAL URL (unmodified).
-  //      This ensures the page's worker is always live and never broken.
-  //   2. Asynchronously attempt to build a shimmed blob URL.
-  //   3. If shimming succeeds, create a SECOND worker from the blob URL,
-  //      wire its messages back through emit, then terminate it after the
-  //      host terminates the original. The second worker is used solely for
-  //      capturing network calls; it is isolated and never interacts with
-  //      the page's application logic.
+  //   1. For a shimmable URL (same-origin http(s) or blob:), synchronously read
+  //      the worker source, prepend the fetch shim, and create the worker from
+  //      the instrumented blob URL. The page gets exactly ONE worker — the
+  //      instrumented one — so the worker's own network side-effects fire
+  //      exactly once. No second capture worker, no double-firing.
+  //   2. If reading/rewriting fails (or the URL is cross-origin), create the
+  //      worker from the ORIGINAL URL unchanged. Worker creation is NEVER broken;
+  //      we simply lose capture for that worker.
   //
-  // Trade-off: this means the shimmed capture worker runs the script twice
-  // (once for real, once for capture). For pure-computation workers that
-  // don't have network side-effects this is harmless. For workers with
-  // side-effects (rare for fetch), it could cause double-requests. To
-  // mitigate: the capture worker has no message port to the page app, so
-  // any `postMessage` it fires lands in our own relay listener and is
-  // discarded (we only forward entries that carry the shim marker).
-  //
-  // A cleaner approach (not implemented here to avoid breaking worker
-  // creation) would be to intercept the URL synchronously before the
-  // constructor runs. That requires Worker.prototype tricks that are
-  // fragile across browsers. This is the safest correct design.
+  // The shimmed worker relays fetch timings back via postMessage carrying
+  // WORKER_SHIM_MARKER; listenToWorker forwards only those into emit and ignores
+  // the worker's application messages.
 
   // Replace the global Worker constructor with a transparent wrapper.
   // Cast required because a plain function cannot satisfy the full Worker
@@ -254,9 +257,6 @@ export function installWorkerHook(): void {
     scriptURL: string | URL,
     options?: WorkerOptions,
   ): Worker {
-    // Always create the real worker first so the page is never blocked.
-    const realWorker = new NativeWorker(scriptURL, options);
-
     const urlString = String(scriptURL);
     const isBlobUrl = urlString.startsWith('blob:');
     const isSameOriginUrl = (() => {
@@ -267,41 +267,29 @@ export function installWorkerHook(): void {
       }
     })();
 
-    // Only attempt shimming for same-origin or blob URLs.
+    // Try to build a single instrumented worker for shimmable URLs.
     if (isSameOriginUrl || isBlobUrl) {
-      const buildUrl = isBlobUrl
-        ? buildShimmedBlobFromBlob(urlString)
-        : buildShimmedBlobUrl(urlString);
-
-      buildUrl
-        .then((shimmedUrl) => {
-          if (!shimmedUrl) return;
-          try {
-            const captureWorker = new NativeWorker(shimmedUrl, options);
-            listenToWorker(captureWorker);
-            // Clean up the blob URL once the worker starts.
-            captureWorker.addEventListener('message', () => {
-              // No-op: relay happens in listenToWorker's listener.
-            });
-            // Terminate the capture worker when the real one is terminated.
-            // We proxy terminate() on the real worker to also terminate ours.
-            const originalTerminate = realWorker.terminate.bind(realWorker);
-            realWorker.terminate = function () {
-              try { captureWorker.terminate(); } catch { /* ignore */ }
-              try { URL.revokeObjectURL(shimmedUrl); } catch { /* ignore */ }
-              originalTerminate();
-            };
-          } catch {
-            // Never break the page's worker on shimming failure.
-          }
-        })
-        .catch(() => {
-          // Shimming failed — silently degrade. The real worker still runs.
-        });
+      const shimmedUrl = buildShimmedBlobUrlSync(urlString, isBlobUrl);
+      if (shimmedUrl) {
+        try {
+          const worker = new NativeWorker(shimmedUrl, options);
+          listenToWorker(worker);
+          // Revoke the blob URL once the worker has loaded its source.
+          const originalTerminate = worker.terminate.bind(worker);
+          worker.terminate = function () {
+            try { URL.revokeObjectURL(shimmedUrl); } catch { /* ignore */ }
+            originalTerminate();
+          };
+          return worker;
+        } catch {
+          try { URL.revokeObjectURL(shimmedUrl); } catch { /* ignore */ }
+          // Fall through to the unmodified native worker below.
+        }
+      }
     }
-    // Cross-origin workers: no shimming attempted. Silently degrade.
 
-    return realWorker;
+    // Cross-origin or rewrite failed: create the worker unchanged. Never break it.
+    return new NativeWorker(scriptURL, options);
   } as unknown as typeof Worker;
 
   // Preserve the prototype chain and statics so instanceof checks still work.

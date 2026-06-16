@@ -1,6 +1,18 @@
 import { describe, it, expect } from 'vitest';
+import ts from 'typescript';
 import { generatePlaywrightTest } from '../../src/testgen/playwright';
 import type { CaptureBundle } from '../../src/shared/types';
+
+// Parse the generated spec with the real TypeScript compiler — the strongest
+// possible "this is runnable source" assertion (catches unterminated string
+// literals, broken comments, etc. that substring checks would miss).
+function expectParses(source: string): void {
+  const out = ts.transpileModule(source, {
+    reportDiagnostics: true,
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+  });
+  expect(out.diagnostics ?? []).toEqual([]);
+}
 
 // ─── Fixture factory ──────────────────────────────────────────────────────────
 
@@ -231,6 +243,90 @@ describe('generatePlaywrightTest — string escaping', () => {
     expect(gotoLine).toBeDefined();
     // Check the string argument is properly quoted
     expect(gotoLine).toMatch(/page\.goto\('.*'\)/);
+  });
+});
+
+// ─── Newline escaping (generated spec must stay parseable) ───────────────────
+
+describe('generatePlaywrightTest — newline escaping', () => {
+  it('should escape embedded newlines when a console error message spans lines', () => {
+    const bundle = makeBundle({
+      console: [
+        {
+          id: 'c1',
+          level: 'error',
+          message: 'Error: Api Fail: boom\n    at handleClick (app.js:42:7)\n    at fire (app.js:9:1)',
+          ts: 1,
+        },
+      ],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    // The string literal carries \n as an escape, never a raw newline.
+    expect(source).toContain("m.includes('Error: Api Fail: boom\\n");
+    // The echo comment collapses the stack onto one comment line.
+    const commentLine = source.split('\n').find((l) => l.includes('//   Error: Api Fail: boom'));
+    expect(commentLine).toBeDefined();
+    expect(commentLine).toContain('at handleClick (app.js:42:7)');
+    expectParses(source);
+  });
+
+  it('should escape newlines when an input fill value is multi-line', () => {
+    const bundle = makeBundle({
+      steps: [
+        { id: 's1', kind: 'input', selector: '#bio', label: 'Bio', value: 'line one\nline two\r\nline three', ts: 1 },
+      ],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect(source).toContain(".fill('line one\\nline two\\r\\nline three')");
+    expectParses(source);
+  });
+
+  it('should collapse newlines in the test title when the bundle title spans lines', () => {
+    const bundle = makeBundle({ title: 'Checkout crashes\nafter applying coupon' });
+    const { source } = generatePlaywrightTest(bundle);
+    expect(source).toContain("test('Checkout crashes after applying coupon'");
+    expectParses(source);
+  });
+
+  it('should collapse newlines in navigate comment labels when a label spans lines', () => {
+    const bundle = makeBundle({
+      steps: [
+        { id: 's1', kind: 'navigate', label: 'https://app.example.com/a', ts: 1 },
+        { id: 's2', kind: 'navigate', label: 'https://app.example.com/b\n; require("evil")', ts: 2 },
+      ],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    const comment = source.split('\n').find((l) => l.includes('// navigated to'));
+    expect(comment).toContain('; require("evil")'); // stayed inside the comment line
+    expectParses(source);
+  });
+
+  it('should escape Unicode line separators (U+2028/U+2029) when they appear in values', () => {
+    const bundle = makeBundle({
+      steps: [
+        { id: 's1', kind: 'input', selector: '#x', label: 'X', value: 'a\u2028b\u2029c', ts: 1 },
+      ],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expect(source).toContain(".fill('a\\u2028b\\u2029c')");
+    expectParses(source);
+  });
+
+  it('should produce a parseable spec when every interpolated field is hostile at once', () => {
+    const bundle = makeBundle({
+      title: "It's\nbroken\rbadly",
+      console: [
+        { id: 'c1', level: 'error', message: "Error: multi'line\n\\path\\fail", ts: 1 },
+      ],
+      steps: [
+        { id: 's1', kind: 'navigate', label: 'https://a.example/x\ny', ts: 1 },
+        { id: 's2', kind: 'input', selector: '#f', label: 'F\nield', value: "v'1\nv2", ts: 2 },
+        { id: 's3', kind: 'submit', label: 'Form\nname', ts: 3 },
+        { id: 's4', kind: 'input', label: 'no-selector\nfield', ts: 4 },
+      ],
+    });
+    const { source } = generatePlaywrightTest(bundle);
+    expectParses(source);
   });
 });
 
@@ -536,11 +632,36 @@ describe('generatePlaywrightTest — step kinds', () => {
     expect(source).toContain("getByText('Save changes'");
   });
 
-  it('emits a URL end-state assertion when the last step is a navigate and nothing failed', () => {
+  it('emits a path-matched URL end-state assertion derived from the last navigate', () => {
     const { source } = generatePlaywrightTest(
       makeBundle({ steps: [{ id: 's1', kind: 'navigate', label: 'https://app.example.com/home', ts: 1 }] }),
     );
-    expect(source).toContain('toHaveURL');
-    expect(source).toContain('confirm this is the correct expected URL');
+    // Path-matched regex (no exact full-URL string, no TODO stub).
+    expect(source).toContain('await expect(page).toHaveURL(/\\/home/)');
+    expect(source).not.toContain('TODO: confirm');
+  });
+
+  it('asserts the last interacted element is still visible', () => {
+    const { source } = generatePlaywrightTest(
+      makeBundle({
+        steps: [
+          { id: 's1', kind: 'navigate', label: 'https://app.example.com/', ts: 1 },
+          { id: 's2', kind: 'click', selector: '#save', label: 'Save', ts: 2 },
+        ],
+      }),
+    );
+    expect(source).toContain("await expect(page.locator('#save')).toBeVisible()");
+  });
+
+  it('asserts a typed input value persists at the end state', () => {
+    const { source } = generatePlaywrightTest(
+      makeBundle({
+        steps: [
+          { id: 's1', kind: 'navigate', label: 'https://app.example.com/', ts: 1 },
+          { id: 's2', kind: 'input', selector: '#email', value: 'a@b.com', label: 'Email', ts: 2 },
+        ],
+      }),
+    );
+    expect(source).toContain("await expect(page.locator('#email')).toHaveValue('a@b.com')");
   });
 });

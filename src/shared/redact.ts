@@ -13,12 +13,16 @@ const SECRET_HEADERS = new Set([
   'proxy-authorization',
 ]);
 
-// Value-level patterns masked inside bodies and input values.
+// Value-level patterns masked inside bodies and input values. Phone numbers
+// and IP addresses are deliberately omitted (false-positive rate is too high —
+// they collide with ids, versions, timestamps); users can opt in via the
+// custom F7 patterns below.
 const PATTERNS: ReadonlyArray<RegExp> = [
   /\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, // email
   /\b(?:\d[ -]*?){13,19}\b/g, // card-like number runs
   /\bBearer\s+[A-Za-z0-9._-]+/gi, // bearer tokens
   /\beyJ[A-Za-z0-9._-]{10,}/g, // JWT-ish
+  /\b\d{3}-\d{2}-\d{4}\b/g, // US SSN
 ];
 
 // Body field names whose values are masked regardless of pattern.
@@ -65,11 +69,17 @@ function redactHeaders(headers?: Record<string, string>): Record<string, string>
 
 function redactBody(body?: string): string | undefined {
   if (!body) return body;
-  // Mask secret-named JSON fields, then run value patterns over the rest.
+  // Mask secret-named JSON / form-encoded fields, then run value patterns over
+  // the rest. Quoted JSON values are matched as a full string literal
+  // (including spaces and escapes — a naive token match leaked
+  // `"password":"hunter two"`); unquoted values stop at the usual delimiters,
+  // which keeps `key=value&...` form encoding working.
   const masked = body.replace(
-    /("?\b[\w-]+"?\s*[:=]\s*)("?)([^",&}\s]+)(\2)/g,
-    (full, prefix: string, q: string, _value: string, qEnd: string) =>
-      SECRET_FIELDS.test(prefix) ? `${prefix}${q}${REDACTED}${qEnd}` : full,
+    /("?\b[\w-]+"?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|[^",&}\s]+)/g,
+    (full, prefix: string, value: string) =>
+      SECRET_FIELDS.test(prefix)
+        ? `${prefix}${value.startsWith('"') ? `"${REDACTED}"` : REDACTED}`
+        : full,
   );
   return maskString(masked);
 }
@@ -105,6 +115,11 @@ function redactNetwork(entry: NetworkEntry): NetworkEntry {
 export function redactBundle(bundle: CaptureBundle): CaptureBundle {
   return {
     ...bundle,
+    // Titles are derived from console errors / failed URLs and can carry PII;
+    // the captured page URL can carry magic-link / OAuth tokens. Both leave
+    // the browser in filed tickets and LLM prompts, so they're masked too.
+    title: maskString(bundle.title),
+    environment: { ...bundle.environment, url: redactUrl(bundle.environment.url) },
     console: bundle.console.map((c) => ({ ...c, message: maskString(c.message) })),
     network: bundle.network.map(redactNetwork),
     // The DOM snapshot is page text/markup — it can contain visible PII (emails,

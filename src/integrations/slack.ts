@@ -1,6 +1,12 @@
 import type { CaptureBundle } from '@shared/types';
 import { describeBundle } from './format';
-import { simulatedRef, type FileResult, type Integration, type TestResult } from './types';
+import {
+  simulatedRef,
+  type FileResult,
+  type Integration,
+  type TestResult,
+  type TriageFields,
+} from './types';
 
 // Reads the Incoming Webhook URL stored in chrome.storage.local.
 async function config(): Promise<{ webhookUrl: string | undefined }> {
@@ -10,7 +16,7 @@ async function config(): Promise<{ webhookUrl: string | undefined }> {
 
 // Build a Slack Block Kit payload for the bug summary.
 // Using header + section blocks so the message is scannable at a glance.
-function buildBlocks(bundle: CaptureBundle): unknown {
+function buildBlocks(bundle: CaptureBundle, fields?: TriageFields): unknown {
   const env = bundle.environment;
   const failedCount = bundle.network.filter((n) => n.failed).length;
   const topError =
@@ -80,22 +86,23 @@ function buildBlocks(bundle: CaptureBundle): unknown {
       },
     ],
     // Fallback text for notifications and accessibility — describeBundle gives
-    // a well-formatted markdown summary that mirrors what other integrations use.
-    text: describeBundle(bundle),
+    // a well-formatted markdown summary that mirrors what other integrations
+    // use, and carries the triage line (team/assignee/priority) when chosen.
+    text: describeBundle(bundle, { fields }),
   };
 }
 
 export const slack: Integration = {
   id: 'slack',
   name: 'Slack',
-  async file(bundle: CaptureBundle): Promise<FileResult> {
+  async file(bundle: CaptureBundle, fields?: TriageFields): Promise<FileResult> {
     const { webhookUrl } = await config();
     if (!webhookUrl) return simulatedRef('slack');
 
     const res = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildBlocks(bundle)),
+      body: JSON.stringify(buildBlocks(bundle, fields)),
     });
 
     if (!res.ok) throw new Error(`Slack webhook ${res.status}`);
